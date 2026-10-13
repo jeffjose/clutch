@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn what_the_shell_answers() {
         // As gdbus printed it, from the extension run against a made-up shell.
-        let printed = r#"('{"windows":[{"id":7,"title":"It\\u0027s a \\u201ctest\\u201d \\\\ ok \\u2014 \\ud55c\\uad6d","program":"Firefox","icon":"firefox","workspace":0,"front":true},{"id":12,"title":"everywhere","program":"x","icon":"","workspace":-1,"front":false}],"workspaces":["Workspace 1","Workspace 2"],"workspace":1,"monitors":2}',)"#;
+        let printed = r#"('{"version":2,"windows":[{"id":7,"title":"It\\u0027s a \\u201ctest\\u201d \\\\ ok \\u2014 \\ud55c\\uad6d","program":"Firefox","icon":"firefox","workspace":0,"front":true},{"id":12,"title":"everywhere","program":"x","icon":"","workspace":-1,"front":false}],"workspaces":["Workspace 1","Workspace 2"],"workspace":1,"monitors":2}',)"#;
         let state: State = serde_json::from_str(&extension::unwrap(printed).unwrap()).unwrap();
         let desk = Desk::Gnome(Gnome { state });
         let windows = desk.windows();

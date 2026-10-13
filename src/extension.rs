@@ -1,6 +1,7 @@
 //! The part of clutch that lives in GNOME's shell, where on Wayland the
 //! windows can be seen and moved from: putting it in, and asking it.
 
+use crate::gnome;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -10,8 +11,13 @@ const UUID: &str = "clutch@jeffjose.github.io";
 const PATH: &str = "/io/github/jeffjose/Clutch";
 const NAME: &str = "io.github.jeffjose.Clutch";
 
+/// Which writing of the extension this is. The shell keeps running the
+/// one it started with, and says which that was.
+const VERSION: u32 = 2;
+
 /// What it answers to.
-const INTERFACE: &str = r#"const INTERFACE = `<node><interface name="io.github.jeffjose.Clutch">
+const INTERFACE: &str = r#"const VERSION = 2;
+const INTERFACE = `<node><interface name="io.github.jeffjose.Clutch">
   <method name="State"><arg type="s" direction="out"/></method>
   <method name="Activate"><arg type="u" direction="in"/></method>
   <method name="Close"><arg type="u" direction="in"/></method>
@@ -56,11 +62,6 @@ fn source(version: u32) -> String {
     }
 }
 
-/// Whether the shell has it running.
-pub fn loaded() -> bool {
-    call("State", &[]).is_some()
-}
-
 /// Put it in and turn it on. A shell on Wayland only finds a new
 /// extension when it starts, which is at the next login. Returns what
 /// was done and to what, or `None` where there is no GNOME shell.
@@ -72,24 +73,46 @@ pub fn install() -> Option<(&'static str, &'static str)> {
         "{{\n  \"uuid\": \"{UUID}\",\n  \"name\": \"clutch\",\n  \"description\": \"Lets clutch see and move windows.\",\n  \
          \"url\": \"https://github.com/jeffjose/clutch\",\n  \"shell-version\": [\"{version}\"]\n}}\n"
     );
-    let changed = fs::read_to_string(dir.join("extension.js")).ok().as_deref() != Some(&source(version));
     fs::write(dir.join("metadata.json"), metadata).ok()?;
     fs::write(dir.join("extension.js"), source(version)).ok()?;
-    let quietly = |arguments: &[&str]| {
-        let _ = Command::new("gnome-extensions").args(arguments).stdout(Stdio::null()).stderr(Stdio::null()).status();
-    };
-    quietly(&["enable", UUID]);
-    Some(match (loaded(), changed) {
-        (true, false) => ("Loaded", "GNOME extension"),
-        // The shell keeps the one it started with.
-        (true, true) => ("Updated", "GNOME extension (log out and in to load the new one)"),
-        (false, _) => ("Installed", "GNOME extension (log out and in once to load it)"),
+    enable(true);
+    // A shell that already knew of it takes a moment to start it.
+    let mut running = None;
+    for _ in 0..10 {
+        running = call("State", &[]);
+        if running.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    Some(match running {
+        Some(state) if state.contains(&format!("\"version\":{VERSION},")) => ("Loaded", "GNOME extension"),
+        Some(_) => ("Updated", "GNOME extension (log out and in to load the new one)"),
+        None => ("Installed", "GNOME extension (log out and in once to load it)"),
     })
 }
 
 pub fn remove() {
-    let _ = Command::new("gnome-extensions").args(["disable", UUID]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    enable(false);
     let _ = fs::remove_dir_all(dir());
+}
+
+/// Put it on the shell's list of extensions to run, or take it off. The
+/// list is written to directly: `gnome-extensions enable` asks the shell,
+/// which has not heard of an extension put in since it started and so
+/// leaves it off, to stay off at the next login as well.
+fn enable(on: bool) {
+    const LIST: [&str; 2] = ["org.gnome.shell", "enabled-extensions"];
+    let Ok(printed) = gnome::gsettings(&["get", LIST[0], LIST[1]]) else { return };
+    let mut enabled = gnome::strings(&printed);
+    if enabled.iter().any(|uuid| uuid == UUID) == on {
+        return;
+    }
+    enabled.retain(|uuid| uuid != UUID);
+    if on {
+        enabled.push(UUID.to_string());
+    }
+    let _ = gnome::gsettings(&["set", LIST[0], LIST[1], &gnome::list(&enabled)]);
 }
 
 /// Ask it for something. What it says back is as gdbus prints it.

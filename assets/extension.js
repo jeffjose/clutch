@@ -25,8 +25,14 @@
         return all.filter(window => !window.is_skip_taskbar() && !this._ours(window));
     }
 
+    // The shell numbers its windows from somewhere at random, which can be
+    // past what clutch counts to. The end of the number tells them apart.
+    _id(window) {
+        return window.get_id() % 4294967296;
+    }
+
     _find(id) {
-        return this._windows().find(window => window.get_id() === id);
+        return this._windows().find(window => this._id(window) === id);
     }
 
     // The box, across the middle of the monitor in use and a fifth of
@@ -49,7 +55,7 @@
         const windows = this._windows().map(window => {
             const app = tracker.get_window_app(window);
             return {
-                id: window.get_id(),
+                id: this._id(window),
                 title: window.get_title() ?? '',
                 program: app?.get_name() ?? window.get_wm_class() ?? '',
                 icon: app?.get_icon()?.to_string() ?? '',
@@ -61,6 +67,7 @@
         for (let at = 0; at < manager.get_n_workspaces(); at++)
             workspaces.push(Meta.prefs_get_workspace_name(at));
         const state = {
+            version: VERSION,
             windows,
             workspaces,
             workspace: manager.get_active_workspace_index(),

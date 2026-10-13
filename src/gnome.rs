@@ -144,7 +144,7 @@ fn quoted(text: &str) -> String {
 }
 
 /// The strings in what gsettings prints: ['a', 'b'] gives a and b.
-fn strings(printed: &str) -> Vec<String> {
+pub fn strings(printed: &str) -> Vec<String> {
     printed.split('\'').skip(1).step_by(2).map(str::to_string).collect()
 }
 
@@ -187,7 +187,7 @@ fn clashes(shortcuts: &[Shortcut], listed: &str) -> Vec<Note> {
     notes
 }
 
-fn gsettings(arguments: &[&str]) -> Result<String, String> {
+pub fn gsettings(arguments: &[&str]) -> Result<String, String> {
     let output = Command::new("gsettings")
         .args(arguments)
         .output()
@@ -255,7 +255,7 @@ pub fn clear() {
 }
 
 /// A list of strings as gsettings reads one.
-fn list(strings: &[String]) -> String {
+pub fn list(strings: &[String]) -> String {
     match strings.is_empty() {
         true => "@as []".to_string(),
         false => format!("[{}]", strings.iter().map(|s| quoted(s)).collect::<Vec<_>>().join(", ")),
