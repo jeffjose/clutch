@@ -52,6 +52,14 @@ fn home() -> PathBuf {
     PathBuf::from(env::var_os("HOME").unwrap_or_default())
 }
 
+/// Where what clutch has to remember is kept.
+pub fn state_home() -> PathBuf {
+    match env::var_os("XDG_STATE_HOME") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => home().join(".local/state"),
+    }
+}
+
 pub fn config_home() -> PathBuf {
     match env::var_os("XDG_CONFIG_HOME") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),

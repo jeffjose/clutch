@@ -6,6 +6,8 @@
 use crate::config::Binding;
 use crate::keys::{parse_sequence, Chord, ALT, CTRL, SHIFT, SUPER};
 use evdev::KeyCode;
+use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -88,8 +90,16 @@ pub struct Note {
     /// The binding, as written in the settings; none if it is about them all.
     pub keys: String,
     pub what: String,
-    /// A command that puts it right.
-    pub fix: Option<String>,
+    /// The shortcut of GNOME's that is in the way, which `clutch fix` takes.
+    pub fix: Option<Fix>,
+}
+
+/// One of GNOME's own shortcuts: where it is kept, and the keys it is on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fix {
+    pub schema: String,
+    pub key: String,
+    pub accelerator: String,
 }
 
 /// How the bindings stand with GNOME, for `clutch status`.
@@ -168,8 +178,8 @@ fn clashes(shortcuts: &[Shortcut], listed: &str) -> Vec<Note> {
             for ours in shortcuts.iter().filter(|s| normal(&s.accelerator) == normal(&theirs)) {
                 notes.push(Note {
                     keys: ours.keys.clone(),
-                    what: format!("blocked by GNOME's {key}"),
-                    fix: Some(format!("gsettings set {schema} {key} \"[]\"")),
+                    what: format!("GNOME uses these keys for {}", key.replace('-', " ")),
+                    fix: Some(Fix { schema: schema.into(), key: key.into(), accelerator: theirs.clone() }),
                 });
             }
         }
@@ -215,11 +225,7 @@ pub fn sync(shortcuts: &[Shortcut]) -> Vec<Note> {
         paths.push(path);
     }
 
-    let list = match paths.is_empty() {
-        true => "@as []".to_string(),
-        false => format!("[{}]", paths.iter().map(|p| quoted(p)).collect::<Vec<_>>().join(", ")),
-    };
-    if let Err(problem) = gsettings(&["set", LIST, "custom-keybindings", &list]) {
+    if let Err(problem) = gsettings(&["set", LIST, "custom-keybindings", &list(&paths)]) {
         notes.push(failed("", problem));
     }
     for path in old.iter().filter(|path| !paths.contains(path)) {
@@ -238,6 +244,63 @@ pub fn sync(shortcuts: &[Shortcut]) -> Vec<Note> {
 /// Take ours out of GNOME's shortcuts.
 pub fn clear() {
     sync(&[]);
+}
+
+/// A list of strings as gsettings reads one.
+fn list(strings: &[String]) -> String {
+    match strings.is_empty() {
+        true => "@as []".to_string(),
+        false => format!("[{}]", strings.iter().map(|s| quoted(s)).collect::<Vec<_>>().join(", ")),
+    }
+}
+
+/// Where the shortcuts taken from GNOME are written down, to be given
+/// back: a line each of where it is kept and what it was.
+fn taken_path() -> PathBuf {
+    crate::config::state_home().join("clutch/taken-from-gnome")
+}
+
+/// Take from GNOME the shortcuts that are in the way of our bindings:
+/// the keys we want and no others that shortcut may also be on. Returns
+/// a line for each.
+pub fn fix(notes: &[Note]) -> Vec<String> {
+    let mut said = Vec::new();
+    let mut taken = fs::read_to_string(taken_path()).unwrap_or_default();
+    for (note, fix) in notes.iter().filter_map(|note| Some((note, note.fix.as_ref()?))) {
+        let Ok(was) = gsettings(&["get", &fix.schema, &fix.key]) else { continue };
+        let left: Vec<String> = strings(&was).into_iter().filter(|keys| normal(keys) != normal(&fix.accelerator)).collect();
+        match gsettings(&["set", &fix.schema, &fix.key, &list(&left)]) {
+            Ok(_) => {
+                // The first time only: after that it is no longer GNOME's own.
+                let place = format!("{} {} ", fix.schema, fix.key);
+                if !taken.lines().any(|line| line.starts_with(&place)) {
+                    taken += &format!("{place}{}\n", was.trim());
+                }
+                said.push(format!("{}: taken from GNOME's {}", note.keys, fix.key.replace('-', " ")));
+            }
+            Err(problem) => said.push(format!("{}: {problem}", note.keys)),
+        }
+    }
+    let path = taken_path();
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let _ = fs::write(path, taken);
+    said
+}
+
+/// Give GNOME back every shortcut `fix` took. Returns how many.
+pub fn restore() -> usize {
+    let taken = fs::read_to_string(taken_path()).unwrap_or_default();
+    let mut given = 0;
+    for line in taken.lines() {
+        let mut parts = line.splitn(3, ' ');
+        if let (Some(schema), Some(key), Some(was)) = (parts.next(), parts.next(), parts.next()) {
+            given += usize::from(gsettings(&["set", schema, key, was]).is_ok());
+        }
+    }
+    let _ = fs::remove_file(taken_path());
+    given
 }
 
 static LATEST: AtomicU64 = AtomicU64::new(0);
@@ -320,10 +383,14 @@ mod tests {
         let notes = clashes(&shortcuts, listed);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].keys, "super+space");
-        assert_eq!(notes[0].what, "blocked by GNOME's switch-input-source");
-        assert_eq!(
-            notes[0].fix.as_deref(),
-            Some("gsettings set org.gnome.desktop.wm.keybindings switch-input-source \"[]\"")
-        );
+        assert_eq!(notes[0].what, "GNOME uses these keys for switch input source");
+        let fix = Fix {
+            schema: "org.gnome.desktop.wm.keybindings".into(),
+            key: "switch-input-source".into(),
+            accelerator: "<Super>space".into(),
+        };
+        assert_eq!(notes[0].fix, Some(fix));
+        assert_eq!(list(&["a".into(), "b".into()]), "['a', 'b']");
+        assert_eq!(list(&[]), "@as []");
     }
 }

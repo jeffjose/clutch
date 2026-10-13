@@ -24,7 +24,8 @@ clutch: keys that are yours before any program's.
 These need no clutch running; any key bound anywhere can start them.
 
   clutch setup     put clutch on this machine and start it (asks for sudo, once)
-  clutch status    what is running, the keyboards it holds, what is bound
+  clutch status    what is running, and whether each binding works
+  clutch fix       take from GNOME the shortcuts that are on your bindings' keys
   clutch pause     give the keyboards back, until `clutch resume`
   clutch resume
   clutch reload    read the settings again (it does when they are saved, too)
@@ -148,8 +149,12 @@ fn main() {
         "windows" => palette::run("@"),
         "move-monitor" => move_monitor(arguments.next().as_deref()),
         "raise" => raise(arguments.collect()),
-        "status" => ask(&format!("status {}", columns())).map(|reply| print!("{reply}")),
-        "pause" | "resume" | "reload" => ask(&command).map(|reply| print!("{reply}")),
+        "status" => {
+            // In colour on a terminal, unless asked not to.
+            let colour = columns() > 0 && env::var_os("NO_COLOR").is_none();
+            ask(&format!("status {}{}", columns(), if colour { " colour" } else { "" })).map(|reply| print!("{reply}"))
+        }
+        "pause" | "resume" | "reload" | "fix" => ask(&command).map(|reply| print!("{reply}")),
         "" | "help" | "-h" | "--help" => {
             print!("{HELP}");
             Ok(())

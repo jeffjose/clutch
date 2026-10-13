@@ -367,7 +367,11 @@ impl Daemon {
         let asked = String::from_utf8_lossy(&buffer[..length]).trim().to_string();
         let (what, with) = asked.split_once(' ').unwrap_or((&asked, ""));
         let reply = match what {
-            "status" => self.status(with.parse().unwrap_or(0)),
+            "status" => {
+                let (columns, colour) = with.split_once(' ').unwrap_or((with, ""));
+                self.status(columns.parse().unwrap_or(0), colour == "colour")
+            }
+            "fix" => self.fix(),
             "state" => format!("{}\n", self.state()),
             "pause" => {
                 self.paused = true;
@@ -404,7 +408,7 @@ impl Daemon {
         if self.paused {
             "paused".into()
         } else if self.gnome {
-            "bindings are GNOME shortcuts (no keyboard access)".into()
+            "GNOME shortcuts (the keyboard cannot be held here)".into()
         } else if self.out.is_none() {
             "waiting for keyboard access".into()
         } else if held == 0 {
@@ -414,80 +418,95 @@ impl Daemon {
         }
     }
 
-    /// Everything about the running clutch, for a terminal this wide (or
-    /// 0 for something that is not one).
-    fn status(&self, columns: usize) -> String {
-        let line = |what: &str, how: &str| format!("{what:9} {how}\n");
+    /// Everything about the running clutch: how it stands, then a line
+    /// for each binding with a mark for whether it works. For a terminal
+    /// `columns` wide, or 0 for something that is not one, and in colour
+    /// if asked.
+    fn status(&self, columns: usize, colour: bool) -> String {
+        let paint = |code: &str, text: &str| match colour {
+            true => format!("\x1b[{code}m{text}\x1b[0m"),
+            false => text.to_string(),
+        };
+        let (bold, dim, green, red, yellow) = ("1", "2", "32", "31", "33");
         let given = self.given.lock().unwrap();
+        let working = !self.paused && (self.gnome || self.keyboards.iter().any(|k| k.held));
 
-        let version = env!("CARGO_PKG_VERSION");
-        let mut text = line("clutch", &format!("{version}, up {}", ago(self.started.elapsed())));
-        text += &line("state", &self.state());
+        let version = format!("clutch {}", env!("CARGO_PKG_VERSION"));
+        let up = format!(" · up {}", ago(self.started.elapsed()));
+        let mut text = format!("{}{}\n{}\n", paint(bold, &version), paint(dim, &up), self.state());
         for keyboard in &self.keyboards {
             let waiting = if keyboard.held { "" } else { " (not held yet)" };
-            text += &line("keyboard", &format!("{}{waiting}", keyboard.name));
+            text += &paint(dim, &format!("  {}{waiting}", keyboard.name));
+            text += "\n";
         }
-        text += &line("settings", &config::short(&self.options.config));
+        text += &paint(dim, &config::short(&self.options.config));
+        text += "\n";
         if let Some(problem) = &self.problem {
-            text += &line("mistake", &format!("{problem} (bindings unchanged)"));
+            text += &paint(red, &format!("  {problem}"));
+            text += &paint(dim, " (so the bindings are as they were)");
+            text += "\n";
         }
         if self.gnome {
             for note in given.notes.iter().filter(|note| note.keys.is_empty()) {
-                text += &line("gnome", &note.what);
+                text += &paint(red, &format!("  {}", note.what));
+                text += "\n";
             }
         }
         text += "\n";
 
-        // Each binding, what it runs, and how it has fared: where the
-        // keys are ours, how often it was pressed; with GNOME, whether
-        // it has it.
-        let fared = |binding: &Binding, runs: u32| {
-            if self.paused {
-                String::new()
-            } else if !self.gnome {
-                if runs > 0 { format!("{runs}×") } else { String::new() }
-            } else if let Some(note) = given.notes.iter().find(|note| note.keys == binding.keys) {
-                note.what.clone()
-            } else if given.notes.iter().any(|note| note.keys.is_empty()) {
-                // GNOME's settings could not be written at all.
-                "not set".into()
-            } else if given.done {
-                "in GNOME".into()
-            } else {
-                "…".into()
-            }
-        };
-        let rows: Vec<(&str, &str, String)> = self
-            .bindings
-            .iter()
-            .zip(&self.runs)
-            .map(|(binding, runs)| (binding.keys.as_str(), binding.command.as_str(), fared(binding, *runs)))
-            .collect();
         let width = |text: &str| text.chars().count();
-        let keys = rows.iter().map(|row| width(row.0)).max().unwrap_or(0);
-        let last = rows.iter().map(|row| width(&row.2)).max().unwrap_or(0);
-        let mut command = rows.iter().map(|row| width(row.1)).max().unwrap_or(0);
-        if columns > 0 {
-            // A long command is cut short to keep each binding to a line.
-            let taken = keys + 2 + if last > 0 { last + 2 } else { 0 };
-            command = command.min(columns.saturating_sub(taken).max(16));
-        }
-        for (bound, runs, fared) in &rows {
-            let row = format!("{bound:keys$}  {:command$}  {fared}", cut(runs, command));
+        let keys = self.bindings.iter().map(|b| width(&b.keys)).max().unwrap_or(0);
+        let widest = self.bindings.iter().map(|b| width(&b.command)).max().unwrap_or(0);
+        // What is in front of a command, and the count that may follow it.
+        let (before, after) = (2 + 1 + 2 + keys + 2, 2 + 6);
+        let command = if columns > 0 { widest.min(columns.saturating_sub(before + after).max(12)) } else { widest };
+        let failed = self.gnome && given.notes.iter().any(|note| note.keys.is_empty());
+        let mut broken = 0;
+        for (binding, runs) in self.bindings.iter().zip(&self.runs) {
+            let note = given.notes.iter().find(|note| self.gnome && note.keys == binding.keys);
+            // The mark: working, not working, or not in force.
+            let mark = match note {
+                _ if !working => paint(dim, "–"),
+                Some(note) if note.fix.is_none() && note.what.starts_with("skipped") => paint(yellow, "–"),
+                Some(_) => paint(red, "✗"),
+                None if failed => paint(red, "✗"),
+                None if self.gnome && !given.done => paint(dim, "…"),
+                None => paint(green, "✓"),
+            };
+            let pressed = if !self.gnome && *runs > 0 { format!("{runs}×") } else { String::new() };
+            let shown = format!("{:command$}", cut(&binding.command, command));
+            let row = format!("  {mark}  {:keys$}  {}  {}", binding.keys, paint(dim, &shown), pressed);
             text += row.trim_end();
             text += "\n";
-        }
-        if rows.is_empty() {
-            text += "nothing bound\n";
-        }
-        if self.gnome && !self.paused {
-            for note in &given.notes {
-                if let Some(fix) = &note.fix {
-                    text += &format!("\nto unblock {}:\n  {fix}\n", note.keys);
-                }
+            if let Some(note) = note.filter(|_| working) {
+                broken += usize::from(note.fix.is_some());
+                let colour = if note.fix.is_some() { red } else { yellow };
+                text += &format!("{:before$}{}\n", "", paint(colour, &note.what));
             }
         }
+        if self.bindings.is_empty() {
+            text += &paint(dim, "  nothing bound");
+            text += "\n";
+        }
+        if broken > 0 {
+            let them = if broken == 1 { "its keys" } else { "their keys" };
+            text += &format!("\n{} not working. {} takes {them} from GNOME.\n", plural(broken, "binding"), paint(bold, "clutch fix"));
+        }
         text
+    }
+
+    /// Take from GNOME the shortcuts that are on our bindings' keys.
+    fn fix(&mut self) -> String {
+        if !self.gnome {
+            return "nothing to fix: the keys clutch holds are never the desktop's\n".into();
+        }
+        let notes = self.given.lock().unwrap().notes.clone();
+        let said = gnome::fix(&notes);
+        if said.is_empty() {
+            return "nothing to fix\n".into();
+        }
+        self.give_to_gnome();
+        said.join("\n") + "\n"
     }
 }
 

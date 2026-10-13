@@ -104,6 +104,8 @@ pub fn remove() -> Result<(), String> {
     // Any shortcuts of ours that GNOME was given.
     if env::var("XDG_CURRENT_DESKTOP").is_ok_and(|desktop| desktop.contains("GNOME")) {
         gnome::clear();
+        // And GNOME's own, which `clutch fix` took, go back to it.
+        gnome::restore();
     }
     say("service", "removed");
     if Path::new(RULE_PATH).exists() {
