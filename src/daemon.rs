@@ -3,6 +3,9 @@
 
 use crate::config::{self, Binding, Config};
 use crate::engine::{Engine, Out};
+use crate::gnome;
+use crate::setup::RULE_PATH;
+use std::sync::{Arc, Mutex};
 use crate::keys::{KEY_BACKSPACE, KEY_ENTER, KEY_ESC};
 use evdev::uinput::VirtualDevice;
 use evdev::{AbsoluteAxisCode, AttributeSet, Device, EventType, InputEvent, KeyCode};
@@ -55,6 +58,10 @@ struct Daemon {
     out: Option<VirtualDevice>,
     out_down: HashSet<u16>,
     paused: bool,
+    /// The bindings are GNOME's shortcuts, as the keyboards cannot be held.
+    gnome: bool,
+    /// What there is to say about the bindings GNOME was given.
+    notes: Arc<Mutex<Vec<String>>>,
     under_systemd: bool,
     started: Instant,
 }
@@ -102,6 +109,8 @@ pub fn run(options: Options) -> ! {
         out: None,
         out_down: HashSet::new(),
         paused: false,
+        gnome: false,
+        notes: Arc::default(),
         under_systemd: env::var_os("NOTIFY_SOCKET").is_some(),
         started: Instant::now(),
     };
@@ -109,6 +118,7 @@ pub fn run(options: Options) -> ! {
     notify("READY=1");
 
     let mut looked = None::<Instant>;
+    let mut asked = None::<Instant>;
     loop {
         // The seat is ours while we may write to uinput: with the udev
         // rule that is while we are logged in at the machine itself.
@@ -121,6 +131,23 @@ pub fn run(options: Options) -> ! {
         }
         if ours && daemon.out.is_none() {
             daemon.out = keyboard_of_our_own();
+        }
+        if daemon.out.is_some() && daemon.gnome {
+            log("the keyboards can be held after all: taking the bindings back from GNOME");
+            daemon.gnome = false;
+            gnome::sync_later(Vec::new(), Vec::new(), daemon.notes.clone());
+        }
+        // With no udev rule the keyboards will never be ours. GNOME can
+        // have the bindings in their place; it is asked for every so
+        // often because before anyone logs in there is no desktop.
+        let ask = daemon.out.is_none() && !daemon.gnome && !Path::new(RULE_PATH).exists();
+        if ask && asked.is_none_or(|at| at.elapsed() >= Duration::from_secs(2)) {
+            asked = Some(Instant::now());
+            if daemon.desktop().contains("GNOME") {
+                log("no way to hold the keyboards here: giving the bindings to GNOME");
+                daemon.gnome = true;
+                daemon.give_to_gnome();
+            }
         }
         if daemon.out.is_some() && looked.is_none_or(|at| at.elapsed() >= Duration::from_secs(2)) {
             daemon.look_for_keyboards();
@@ -185,6 +212,9 @@ impl Daemon {
                 self.runs = vec![0; settings.bindings.len()];
                 self.bindings = settings.bindings;
                 self.problem = None;
+                if self.gnome {
+                    self.give_to_gnome();
+                }
                 let said = format!("{} bound", plural(self.bindings.len(), "key"));
                 log(format!("{}: {said}", self.options.config.display()));
                 said
@@ -296,6 +326,25 @@ impl Daemon {
         }
     }
 
+    fn desktop(&self) -> String {
+        if !self.under_systemd {
+            return env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+        }
+        session_environment()
+            .into_iter()
+            .find(|(name, _)| name == "XDG_CURRENT_DESKTOP")
+            .map_or(String::new(), |(_, value)| value)
+    }
+
+    /// Make GNOME's shortcuts of ours the bindings, or none while paused.
+    fn give_to_gnome(&mut self) {
+        let (shortcuts, said) = match self.paused {
+            true => (Vec::new(), Vec::new()),
+            false => gnome::shortcuts(&self.bindings),
+        };
+        gnome::sync_later(shortcuts, said, self.notes.clone());
+    }
+
     /// Give the keyboards back to the programs, with no key left down.
     fn let_go(&mut self) {
         for keyboard in self.keyboards.iter_mut().filter(|k| k.held) {
@@ -320,10 +369,16 @@ impl Daemon {
             "pause" => {
                 self.paused = true;
                 self.let_go();
+                if self.gnome {
+                    self.give_to_gnome();
+                }
                 "paused: the keys are as they were without clutch\n".into()
             }
             "resume" => {
                 self.paused = false;
+                if self.gnome {
+                    self.give_to_gnome();
+                }
                 "resumed\n".into()
             }
             "reload" => format!("{}\n", self.reload()),
@@ -336,6 +391,8 @@ impl Daemon {
         let held = self.keyboards.iter().filter(|k| k.held).count();
         let state = if self.paused {
             "paused"
+        } else if self.gnome {
+            "the keyboards cannot be held here, so the bindings are GNOME's shortcuts"
         } else if self.out.is_none() {
             "waiting to be let at the keyboards (clutch setup, or nobody is logged in here)"
         } else if held == 0 {
@@ -358,10 +415,22 @@ impl Daemon {
         }
         let width = self.bindings.iter().map(|b| b.keys.len()).max().unwrap_or(0);
         for (binding, runs) in self.bindings.iter().zip(&self.runs) {
-            text += &format!("  {:width$}  {}  ({})\n", binding.keys, binding.command, times(*runs));
+            // GNOME does not say when a shortcut of its own was pressed.
+            match self.gnome {
+                true => text += &format!("  {:width$}  {}\n", binding.keys, binding.command),
+                false => {
+                    let pressed = times(*runs);
+                    text += &format!("  {:width$}  {}  ({pressed})\n", binding.keys, binding.command)
+                }
+            }
         }
         if self.bindings.is_empty() {
             text += "  nothing bound\n";
+        }
+        if self.gnome {
+            for note in self.notes.lock().unwrap().iter() {
+                text += &format!("  {note}\n");
+            }
         }
         text
     }

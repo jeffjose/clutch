@@ -1,6 +1,7 @@
 mod config;
 mod daemon;
 mod engine;
+mod gnome;
 mod keys;
 mod setup;
 

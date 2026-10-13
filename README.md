@@ -43,6 +43,20 @@ A key clutch takes is not seen by anything else, so a shortcut of the
 desktop's on the same key does nothing while clutch runs, and works
 again when it does not.
 
+## Without sudo
+
+Where the rule cannot be put in, clutch cannot hold the keyboards. On
+GNOME it gives your bindings to GNOME instead, as custom shortcuts of
+GNOME's own, and keeps them in step with the settings file. The file
+and the commands are the same; `clutch status` says which way a machine
+is, and what did not carry over:
+
+- chords only: GNOME has no sequences;
+- a shortcut of GNOME's on the same keys wins, and `clutch status` gives
+  the command that clears it.
+
+Shortcuts you made in GNOME yourself are left alone.
+
 ## If it goes wrong
 
 clutch is between you and every key, so there are three ways out:

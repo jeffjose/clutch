@@ -1,6 +1,6 @@
 //! Putting clutch on a machine, and taking it off again.
 
-use crate::config;
+use crate::{config, gnome};
 use std::env;
 use std::ffi::CString;
 use std::fs;
@@ -10,7 +10,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 const RULE: &str = include_str!("../assets/70-clutch.rules");
-const RULE_PATH: &str = "/etc/udev/rules.d/70-clutch.rules";
+pub const RULE_PATH: &str = "/etc/udev/rules.d/70-clutch.rules";
 const UNIT: &str = include_str!("../assets/clutch.service");
 
 /// The udev rule goes in, or with nothing to put, comes out; then udev
@@ -54,9 +54,15 @@ fn may_write(path: &str) -> bool {
 pub fn setup() -> Result<(), String> {
     if fs::read_to_string(RULE_PATH).ok().as_deref() != Some(RULE) {
         println!("Letting you at the keyboards: one udev rule, which needs sudo.");
-        ran(Command::new("sudo").args(["sh", "-c", AS_ROOT, RULE_PATH, RULE]))?;
+        if let Err(problem) = ran(Command::new("sudo").args(["sh", "-c", AS_ROOT, RULE_PATH, RULE])) {
+            println!(
+                "{problem}\n\
+                 Without the rule clutch cannot hold the keyboards. On GNOME it gives\n\
+                 your bindings to GNOME as shortcuts instead; anywhere else it waits."
+            );
+        }
     }
-    if !may_write("/dev/uinput") {
+    if Path::new(RULE_PATH).exists() && !may_write("/dev/uinput") {
         println!(
             "The rule is in, but the keyboards are not yours yet. They are while you\n\
              are logged in at this machine itself; clutch starts by itself then."
@@ -76,7 +82,7 @@ pub fn setup() -> Result<(), String> {
     systemctl(&["restart", "clutch.service"])?;
 
     // A moment for it to find the keyboards before it is asked.
-    sleep(Duration::from_millis(600));
+    sleep(Duration::from_millis(1500));
     print!("{}", crate::ask("status")?);
     Ok(())
 }
@@ -85,6 +91,10 @@ pub fn remove() -> Result<(), String> {
     let _ = systemctl(&["disable", "--quiet", "--now", "clutch.service"]);
     let _ = fs::remove_file(unit_path());
     let _ = systemctl(&["daemon-reload"]);
+    // Any shortcuts of ours that GNOME was given.
+    if env::var("XDG_CURRENT_DESKTOP").is_ok_and(|desktop| desktop.contains("GNOME")) {
+        gnome::clear();
+    }
     if Path::new(RULE_PATH).exists() {
         println!("Taking the udev rule out, which needs sudo.");
         ran(Command::new("sudo").args(["sh", "-c", AS_ROOT, RULE_PATH, ""]))?;
