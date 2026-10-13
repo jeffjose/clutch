@@ -63,6 +63,14 @@ first letter says what is looked for:
 | `#` | workspaces |
 | `!` | a line of shell |
 
+An editor's window is a coding project, and with nothing typed the
+projects are tiles: a letter, the name, how its git stands, and what it
+is written in. None of it is set anywhere: the project is in the
+window's title, the letter is the first free one in its name, and
+`Cargo.toml` or `package.json` says the rest. Alt and the letter goes
+straight to it, so with Alt still down from opening the box, clutch is
+`Alt+Space`, `C`.
+
 Two more for keys of their own:
 
 ```sh

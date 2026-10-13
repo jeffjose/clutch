@@ -10,12 +10,14 @@ mod apps;
 pub mod canvas;
 mod field;
 mod matching;
+mod projects;
 
 use crate::config::{self, Config};
 use crate::desk::Desk;
 use crate::extension;
 use canvas::{Canvas, Icon, Text};
 use field::TextField;
+use projects::Project;
 use softbuffer::{Context, Surface};
 use std::collections::HashMap;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -44,7 +46,11 @@ const ON_ACCENT: u32 = 0xFFFFFF;
 const DIM_ON_ACCENT: u32 = 0xC9D3F6;
 
 /// How many matches are in view at once.
-const ROWS: usize = 8;
+const ROWS: usize = 9;
+/// The projects are tiles, this many across, and at most this many bands
+/// of them in view: more are scrolled to.
+const COLUMNS: usize = 6;
+const BANDS: usize = 2;
 
 /// The icons, as letters of the icon font.
 mod glyph {
@@ -141,12 +147,14 @@ struct Item {
     /// What it is found by.
     find: String,
     action: Action,
+    /// The coding project this is a window of, if it is an editor's.
+    project: Option<Project>,
 }
 
 impl Item {
     fn new(glyph: &'static str, title: &str, detail: &str, hint: &str, action: Action) -> Item {
         let find = format!("{title} {detail}");
-        Item { glyph, picture: Picture::None, title: title.into(), detail: detail.into(), hint: hint.into(), find, action }
+        Item { glyph, picture: Picture::None, title: title.into(), detail: detail.into(), hint: hint.into(), find, action, project: None }
     }
 }
 
@@ -157,12 +165,15 @@ struct Stock {
     apps: Vec<Item>,
     commands: Vec<Item>,
     workspaces: Vec<Item>,
+    /// The window used before the one in front: where Enter alone goes.
+    recent: Option<u32>,
 }
 
 impl Stock {
     fn gather(desk: Option<&Desk>) -> Stock {
         let mut stock = Stock::default();
         let mut sends = Vec::new();
+        let mut folders = Vec::new();
         let active = desk.and_then(Desk::active);
 
         if let Some(desk) = desk {
@@ -177,8 +188,35 @@ impl Stock {
                 let mut item = Item::new(glyph::WINDOW, &window.title, &window.class, place.map_or("", |name| name), Action::Activate(window.id));
                 // Its own icon where it brings one; else its program's, by name.
                 item.picture = if window.icon.is_empty() { Picture::Window(window.id) } else { Picture::Named(window.icon.clone()) };
+                // An editor's window is a project.
+                if let Some(name) = projects::name_of(&window.title) {
+                    folders.push(projects::folder_of(&name, &window.class));
+                    item.project = Some(Project { colour: projects::colour_of(&name), name, ..Project::default() });
+                }
                 stock.windows.push(item);
             }
+            // What the folders say of the projects, and a letter for each.
+            let mut found: Vec<&mut Project> = stock.windows.iter_mut().filter_map(|item| item.project.as_mut()).collect();
+            let names: Vec<String> = found.iter().map(|project| project.name.clone()).collect();
+            let mut looked: Vec<Project> = found.iter().map(|project| (**project).clone()).collect();
+            projects::look_into(&mut looked, &folders);
+            for ((project, looked), letter) in found.iter_mut().zip(looked).zip(projects::letters(&names)) {
+                **project = Project { letter, ..looked };
+            }
+            for item in stock.windows.iter_mut() {
+                let Some(project) = &item.project else { continue };
+                // Found by its name and what it is written in, and as a
+                // row those are said at the right.
+                item.find = format!("{} {} {}", project.name, item.find, project.kinds.join(" "));
+                if item.hint.is_empty() {
+                    item.hint = project.kinds.join(" · ");
+                }
+                // The project is what it is called; the file that is open
+                // in it is the lesser word.
+                let file = item.title.rsplit_once(&format!(" - {}", project.name)).map_or("", |(file, _)| file);
+                (item.detail, item.title) = (file.to_string(), project.name.clone());
+            }
+            stock.recent = windows.first().map(|window| window.id);
             for (at, name) in names.iter().enumerate() {
                 let hint = if at as u32 == current { "here" } else { "" };
                 stock.workspaces.push(Item::new(glyph::WORKSPACE, name, "", hint, Action::Workspace(at as u32)));
@@ -243,9 +281,16 @@ impl Stock {
             Mode::Shell => vec![shell(typed)],
             // With nothing typed: the windows, to go straight to one. Where
             // they cannot be seen, the applications.
+            // The projects come first, by name, so that each is always in
+            // the same place; then the other windows, the last used first.
             Mode::Find if typed.trim().is_empty() => match self.windows.is_empty() {
                 true => self.apps.clone(),
-                false => self.windows.clone(),
+                false => {
+                    let (mut projects, others): (Vec<Item>, Vec<Item>) =
+                        self.windows.iter().cloned().partition(|item| item.project.is_some());
+                    projects.sort_by_key(|item| item.project.as_ref().map(|project| project.name.to_lowercase()));
+                    projects.into_iter().chain(others).collect()
+                }
             },
             Mode::Find => {
                 // The closest first, a window before an application that
@@ -331,6 +376,12 @@ impl Layout {
     fn height(&self) -> i32 {
         self.head + ROWS as i32 * self.row + self.pad / 2 + self.foot
     }
+
+    /// How tall a project's tile is: a large letter, the name, and two
+    /// small lines under it.
+    fn tile(&self) -> i32 {
+        Text::line_height(self.px * 7 / 4) + self.line + 2 * Text::line_height(self.px * 5 / 6) + self.pad / 2
+    }
 }
 
 struct Palette {
@@ -343,6 +394,10 @@ struct Palette {
     selected: usize,
     /// The first match in view.
     first: usize,
+    /// How many of the matches, the first ones, are drawn as tiles, and
+    /// the first band of those in view.
+    tiles: usize,
+    band: usize,
     modifiers: ModifiersState,
     layout: Layout,
     /// Where on the screen the box goes, if that can be said.
@@ -357,13 +412,36 @@ struct Palette {
 
 impl Palette {
     fn typed_changed(&mut self) {
-        self.found = self.stock.matching(&self.field.string());
-        (self.selected, self.first) = (0, 0);
+        let typed = self.field.string();
+        self.found = self.stock.matching(&typed);
+        (self.selected, self.first, self.band, self.tiles) = (0, 0, 0, 0);
+        // With nothing typed the projects are tiles, and what is picked
+        // out is the window used before this one, wherever it is.
+        if typed.is_empty() {
+            self.tiles = self.found.iter().take_while(|item| item.project.is_some()).count();
+            let recent = |item: &Item| matches!(item.action, Action::Activate(id) if Some(id) == self.stock.recent);
+            self.select(self.found.iter().position(recent).unwrap_or(0));
+        }
+    }
+
+    /// How many bands of tiles are in view, and how many rows fit under them.
+    fn room(&self) -> (usize, usize) {
+        let bands = self.tiles.div_ceil(COLUMNS).min(BANDS);
+        let Layout { row, pad, .. } = self.layout;
+        let taken = if bands > 0 { bands as i32 * self.layout.tile() + pad / 2 } else { 0 };
+        (bands, ((ROWS as i32 * row - taken) / row).max(1) as usize)
     }
 
     fn select(&mut self, to: usize) {
         self.selected = to.min(self.found.len().saturating_sub(1));
-        self.first = self.first.clamp((self.selected + 1).saturating_sub(ROWS), self.selected);
+        let (bands, rows) = self.room();
+        if self.selected < self.tiles {
+            // Its band of tiles into view.
+            let band = self.selected / COLUMNS;
+            self.band = self.band.clamp((band + 1).saturating_sub(bands), band);
+        } else {
+            self.first = self.first.max(self.tiles).clamp((self.selected + 1).saturating_sub(rows), self.selected);
+        }
     }
 
     fn step(&mut self, by: isize) {
@@ -371,6 +449,37 @@ impl Palette {
         if count > 0 {
             self.select((self.selected as isize + by).rem_euclid(count) as usize);
         }
+    }
+
+    /// Up or down by one: among the tiles that is a band, and from their
+    /// last band down is the first row under them.
+    fn step_down(&mut self, down: bool) {
+        let (at, tiles, count) = (self.selected, self.tiles, self.found.len());
+        let to = match (at < tiles, down) {
+            (true, true) if at + COLUMNS < tiles => at + COLUMNS,
+            // Onto the last band where it is short, or off the tiles.
+            (true, true) if at / COLUMNS < (tiles - 1) / COLUMNS => tiles - 1,
+            (true, true) if tiles < count => tiles,
+            (true, true) => at,
+            (true, false) => at.checked_sub(COLUMNS).unwrap_or(at),
+            (false, false) if at == tiles && tiles > 0 => tiles - 1,
+            (false, false) => at.saturating_sub(1).max(tiles),
+            (false, true) => (at + 1).min(count.saturating_sub(1)),
+        };
+        self.select(to);
+    }
+
+    /// Go to what is picked out, or to `item`, and be done.
+    fn go(&mut self, at: usize, event_loop: &ActiveEventLoop) {
+        if let Some(item) = self.found.get(at) {
+            // Out of the way first, so that the window gone to is the
+            // last thing to be given the keyboard.
+            if let Some(window) = &self.window {
+                window.set_visible(false);
+            }
+            perform(&item.action, self.desk.as_ref());
+        }
+        event_loop.exit();
     }
 
     /// The picture for a row, fetched the first time the row is drawn.
@@ -423,11 +532,65 @@ impl Palette {
         self.text.draw(&mut canvas, note_left, top, px, DIM_TEXT_COLOR, &note);
         canvas.fill(1, head - 1, width - 2, 1, RULE_COLOR);
 
+        // The projects, a tile each: its letter, its name, how its git
+        // stands and what it is written in.
+        let (bands, rows) = self.room();
+        let (tile_width, tile_height) = ((width - pad) / COLUMNS as i32, self.layout.tile());
+        let (big, small) = (px * 7 / 4, px * 5 / 6);
+        for at in (self.band * COLUMNS..self.tiles).take(bands * COLUMNS) {
+            let Some(project) = self.found[at].project.clone() else { continue };
+            let (column, band) = ((at % COLUMNS) as i32, (at / COLUMNS - self.band) as i32);
+            let (tile_left, tile_top) = (pad / 2 + column * tile_width, head + pad / 4 + band * tile_height);
+            let picked = at == self.selected;
+            if picked {
+                canvas.round_fill(tile_left, tile_top, tile_width, tile_height, pad / 2, ACCENT, 256);
+            }
+            let (main, dim) = if picked { (ON_ACCENT, DIM_ON_ACCENT) } else { (TEXT_COLOR, DIM_TEXT_COLOR) };
+            let inside = tile_width - pad;
+            // Each line across the middle of the tile.
+            let mut centred = |text: &mut Text, top: i32, size: u32, colour: u32, words: &str| {
+                let words = text.clipped(words, inside, size);
+                let across = text.width(&words, size);
+                text.draw(&mut canvas, tile_left + (tile_width - across) / 2, top, size, colour, &words);
+            };
+            let mut top = tile_top + pad / 4;
+            centred(&mut self.text, top, big, if picked { ON_ACCENT } else { project.colour }, &project.letter.to_string());
+            top += Text::line_height(big);
+            centred(&mut self.text, top, px, main, &project.name);
+            top += line;
+            let state = match (project.branch.as_str(), project.changed) {
+                (_, None) => String::new(),
+                ("", Some(0)) => "clean".to_string(),
+                ("", Some(changed)) => format!("{changed} changed"),
+                (branch, Some(0)) => branch.to_string(),
+                (branch, Some(changed)) => format!("{branch} · {changed}"),
+            };
+            centred(&mut self.text, top, small, dim, &state);
+            top += Text::line_height(small);
+            // What it is written in, each in the colour it is known by.
+            let gap = self.text.width("  ", small);
+            let across: i32 = project.kinds.iter().map(|kind| self.text.width(kind, small)).sum::<i32>() + gap * project.kinds.len().saturating_sub(1) as i32;
+            let mut kind_left = tile_left + (tile_width - across.min(inside)) / 2;
+            for kind in &project.kinds {
+                let kind_width = self.text.width(kind, small);
+                if kind_left + kind_width <= tile_left + tile_width - pad / 2 {
+                    let colour = if picked { DIM_ON_ACCENT } else { projects::kind_colour(kind) };
+                    self.text.draw(&mut canvas, kind_left, top, small, colour, kind);
+                }
+                kind_left += kind_width + gap;
+            }
+        }
+        let under_tiles = if bands > 0 { bands as i32 * tile_height + pad / 2 } else { 0 };
+        if bands > 0 && self.found.len() > self.tiles {
+            canvas.fill(1, head + pad / 4 + under_tiles - pad / 4, width - 2, 1, RULE_COLOR);
+        }
+
         // The matches.
         let picture = row - pad / 2;
-        for at in self.first..(self.first + ROWS).min(self.found.len()) {
+        let first = self.first.max(self.tiles);
+        for at in first..(first + rows).min(self.found.len()) {
             let item = self.found[at].clone();
-            let row_top = head + pad / 4 + (at - self.first) as i32 * row;
+            let row_top = head + pad / 4 + under_tiles + (at - first) as i32 * row;
             let picked = at == self.selected;
             if picked {
                 canvas.round_fill(pad / 2, row_top, width - pad, row, pad / 2, ACCENT, 256);
@@ -468,7 +631,8 @@ impl Palette {
         let foot_top = height - self.layout.foot;
         canvas.fill(1, foot_top, width - 2, 1, RULE_COLOR);
         let mut at = left;
-        for (key, what) in [(">", "do"), ("@", "windows"), ("#", "workspaces"), ("!", "shell"), ("Esc", "close")] {
+        let project = if self.tiles > 0 { Some(("Alt+letter", "project")) } else { None };
+        for (key, what) in project.into_iter().chain([(">", "do"), ("@", "windows"), ("#", "workspaces"), ("!", "shell"), ("Esc", "close")]) {
             let text_top = foot_top + (self.layout.foot - Text::line_height(small)) / 2;
             self.text.draw(&mut canvas, at, text_top, small, TEXT_COLOR, key);
             at += self.text.width(key, small) + pad / 3;
@@ -493,21 +657,24 @@ impl Palette {
 
     fn key(&mut self, key: Key<&str>, event_loop: &ActiveEventLoop) {
         let ctrl = self.modifiers.control_key();
+        let among_tiles = self.selected < self.tiles;
         match key {
             Key::Named(NamedKey::Escape) => return event_loop.exit(),
-            Key::Named(NamedKey::Enter) => {
-                if let Some(item) = self.found.get(self.selected) {
-                    // Out of the way first, so that the window gone to is
-                    // the last thing to be given the keyboard.
-                    if let Some(window) = &self.window {
-                        window.set_visible(false);
-                    }
-                    perform(&item.action, self.desk.as_ref());
+            Key::Named(NamedKey::Enter) => return self.go(self.selected, event_loop),
+            // A project's letter with Alt, which is still down from the
+            // key that opened the box, goes straight to it.
+            Key::Character(letter) if self.modifiers.alt_key() && !ctrl => {
+                let letter = letter.to_lowercase().chars().next();
+                let of_it = |item: &Item| item.project.as_ref().is_some_and(|project| Some(project.letter) == letter);
+                if let Some(at) = self.found.iter().position(of_it) {
+                    return self.go(at, event_loop);
                 }
-                return event_loop.exit();
             }
-            Key::Named(NamedKey::ArrowDown) => self.step(1),
-            Key::Named(NamedKey::ArrowUp) => self.step(-1),
+            Key::Named(NamedKey::ArrowDown) => self.step_down(true),
+            Key::Named(NamedKey::ArrowUp) => self.step_down(false),
+            // Across the tiles, while there is nothing typed to move in.
+            Key::Named(NamedKey::ArrowRight) if among_tiles => self.select((self.selected + 1).min(self.tiles - 1)),
+            Key::Named(NamedKey::ArrowLeft) if among_tiles => self.select(self.selected.saturating_sub(1)),
             Key::Named(NamedKey::Tab) if self.modifiers.shift_key() => self.step(-1),
             Key::Named(NamedKey::Tab) => self.step(1),
             Key::Character("n") if ctrl => self.step(1),
@@ -622,6 +789,8 @@ impl Palette {
             found: Vec::new(),
             selected: 0,
             first: 0,
+            tiles: 0,
+            band: 0,
             modifiers: ModifiersState::empty(),
             layout,
             place,
@@ -701,6 +870,7 @@ mod tests {
             apps: vec![item("Firefox", "Web Browser"), item("Files", "File Manager")],
             commands: vec![item("Close", "notes.md"), item("tilix --quake", "")],
             workspaces: vec![item("Workspace 1", ""), item("Workspace 2", "")],
+            recent: None,
         }
     }
 
