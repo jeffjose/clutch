@@ -382,7 +382,15 @@ impl Daemon {
                 }
                 "resumed\n".into()
             }
-            "reload" => format!("{}\n", self.reload()),
+            "reload" => {
+                let said = self.reload();
+                // Asked for, GNOME is given the bindings again even if
+                // the file is as it was: its side may be what changed.
+                if self.gnome && said == "unchanged" {
+                    self.give_to_gnome();
+                }
+                format!("{said}\n")
+            }
             other => format!("not something clutch does: {other}\n"),
         };
         let _ = stream.write_all(reply.as_bytes());
