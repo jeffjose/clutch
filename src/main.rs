@@ -38,6 +38,15 @@ fn ask(what: &str) -> Result<String, String> {
     Ok(reply)
 }
 
+/// How wide the terminal is, or 0 if what is written to is not one.
+fn columns() -> usize {
+    let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+    match unsafe { libc::ioctl(1, libc::TIOCGWINSZ, &mut size) } {
+        0 => size.ws_col as usize,
+        _ => 0,
+    }
+}
+
 fn check(path: PathBuf) -> Result<(), String> {
     let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let (settings, _) = config::Config::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -72,7 +81,8 @@ fn main() {
         "setup" => setup::setup(),
         "remove" => setup::remove(),
         "check" => check(arguments.next().map_or_else(config::path, PathBuf::from)),
-        "status" | "pause" | "resume" | "reload" => ask(&command).map(|reply| print!("{reply}")),
+        "status" => ask(&format!("status {}", columns())).map(|reply| print!("{reply}")),
+        "pause" | "resume" | "reload" => ask(&command).map(|reply| print!("{reply}")),
         "" | "help" | "-h" | "--help" => {
             print!("{HELP}");
             Ok(())

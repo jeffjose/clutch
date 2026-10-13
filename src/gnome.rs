@@ -82,22 +82,43 @@ pub fn accelerator(chord: Chord) -> Option<String> {
     Some(text + &key)
 }
 
-/// The bindings GNOME can take, and a line for each that it cannot.
-pub fn shortcuts(bindings: &[Binding]) -> (Vec<Shortcut>, Vec<String>) {
+/// Why a binding does not work as a shortcut of GNOME's.
+#[derive(Clone, Debug)]
+pub struct Note {
+    /// The binding, as written in the settings; none if it is about them all.
+    pub keys: String,
+    pub what: String,
+    /// A command that puts it right.
+    pub fix: Option<String>,
+}
+
+/// How the bindings stand with GNOME, for `clutch status`.
+#[derive(Default)]
+pub struct Given {
+    /// GNOME has been told, and what follows is all there is to say.
+    pub done: bool,
+    pub notes: Vec<Note>,
+}
+
+/// The bindings GNOME can take, and a note for each that it cannot.
+pub fn shortcuts(bindings: &[Binding]) -> (Vec<Shortcut>, Vec<Note>) {
     let mut shortcuts = Vec::new();
     let mut notes = Vec::new();
+    let mut skipped = |keys: &str, why: &str| {
+        notes.push(Note { keys: keys.into(), what: format!("skipped: {why}"), fix: None })
+    };
     for binding in bindings {
         let keys = binding.keys.clone();
         let sequence = parse_sequence(&keys).unwrap_or_default();
         if sequence.len() != 1 {
-            notes.push(format!("{keys}: not bound here, GNOME has no sequences"));
+            skipped(&keys, "GNOME has no sequences");
         } else if let Some(accelerator) = accelerator(sequence[0]) {
             // GNOME runs a program with its arguments; a binding is a
             // line of shell.
             let command = format!("sh -c {}", shell_quoted(&binding.command));
             shortcuts.push(Shortcut { keys, accelerator, command });
         } else {
-            notes.push(format!("{keys}: not bound here, GNOME has no shortcut on that key"));
+            skipped(&keys, "GNOME cannot bind that key");
         }
     }
     (shortcuts, notes)
@@ -136,7 +157,7 @@ fn normal(accelerator: &str) -> (u8, String) {
 
 /// A line for each of ours that a shortcut of GNOME's is already on,
 /// from what `gsettings list-recursively` printed.
-fn clashes(shortcuts: &[Shortcut], listed: &str) -> Vec<String> {
+fn clashes(shortcuts: &[Shortcut], listed: &str) -> Vec<Note> {
     let mut notes = Vec::new();
     for line in listed.lines() {
         let mut parts = line.splitn(3, ' ');
@@ -145,10 +166,11 @@ fn clashes(shortcuts: &[Shortcut], listed: &str) -> Vec<String> {
         };
         for theirs in strings(value) {
             for ours in shortcuts.iter().filter(|s| normal(&s.accelerator) == normal(&theirs)) {
-                notes.push(format!(
-                    "{}: GNOME has these keys for {key}, and wins. To give them up:\n      gsettings set {schema} {key} \"[]\"",
-                    ours.keys
-                ));
+                notes.push(Note {
+                    keys: ours.keys.clone(),
+                    what: format!("blocked by GNOME's {key}"),
+                    fix: Some(format!("gsettings set {schema} {key} \"[]\"")),
+                });
             }
         }
     }
@@ -168,10 +190,11 @@ fn gsettings(arguments: &[&str]) -> Result<String, String> {
 
 /// Make GNOME's shortcuts of ours exactly these, and leave every other
 /// one alone. Returns what there is to say about it.
-pub fn sync(shortcuts: &[Shortcut]) -> Vec<String> {
+pub fn sync(shortcuts: &[Shortcut]) -> Vec<Note> {
+    let failed = |keys: &str, what: String| Note { keys: keys.into(), what, fix: None };
     let listed = match gsettings(&["get", LIST, "custom-keybindings"]) {
         Ok(listed) => strings(&listed),
-        Err(problem) => return vec![problem],
+        Err(problem) => return vec![failed("", problem)],
     };
     let (old, mut paths): (Vec<String>, Vec<String>) =
         listed.into_iter().partition(|path| path.starts_with(OURS));
@@ -186,7 +209,7 @@ pub fn sync(shortcuts: &[Shortcut]) -> Vec<String> {
             ("binding", shortcut.accelerator.clone()),
         ] {
             if let Err(problem) = gsettings(&["set", &entry, key, &quoted(&value)]) {
-                notes.push(format!("{}: {problem}", shortcut.keys));
+                notes.push(failed(&shortcut.keys, problem));
             }
         }
         paths.push(path);
@@ -197,7 +220,7 @@ pub fn sync(shortcuts: &[Shortcut]) -> Vec<String> {
         false => format!("[{}]", paths.iter().map(|p| quoted(p)).collect::<Vec<_>>().join(", ")),
     };
     if let Err(problem) = gsettings(&["set", LIST, "custom-keybindings", &list]) {
-        notes.push(problem);
+        notes.push(failed("", problem));
     }
     for path in old.iter().filter(|path| !paths.contains(path)) {
         let _ = gsettings(&["reset-recursively", &format!("{ENTRY}:{path}")]);
@@ -222,19 +245,19 @@ static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 /// `sync` without waiting for it: gsettings is a program run a few times
 /// for each binding. What there is to say goes after `notes`.
-pub fn sync_later(shortcuts: Vec<Shortcut>, said: Vec<String>, notes: Arc<Mutex<Vec<String>>>) {
+pub fn sync_later(shortcuts: Vec<Shortcut>, notes: Vec<Note>, given: Arc<Mutex<Given>>) {
     let turn = LATEST.fetch_add(1, Ordering::SeqCst) + 1;
-    *notes.lock().unwrap() = said.clone();
+    *given.lock().unwrap() = Given { done: false, notes: notes.clone() };
     thread::spawn(move || {
         let _one = ONE_AT_A_TIME.lock().unwrap();
         // Saved again while we waited: the later one is the one to do.
         if LATEST.load(Ordering::SeqCst) != turn {
             return;
         }
-        let mut said = said;
-        said.extend(sync(&shortcuts));
+        let mut notes = notes;
+        notes.extend(sync(&shortcuts));
         if LATEST.load(Ordering::SeqCst) == turn {
-            *notes.lock().unwrap() = said;
+            *given.lock().unwrap() = Given { done: true, notes };
         }
     });
 }
@@ -274,7 +297,8 @@ mod tests {
         assert_eq!(shortcuts.len(), 1);
         assert_eq!(shortcuts[0].command, r"sh -c 'echo it'\''s'");
         assert_eq!(notes.len(), 2);
-        assert!(notes[0].starts_with("super+space t: ") && notes[0].contains("sequences"));
+        assert_eq!(notes[0].keys, "super+space t");
+        assert!(notes[0].what.contains("sequences"));
     }
 
     #[test]
@@ -293,7 +317,11 @@ mod tests {
                       org.gnome.desktop.wm.keybindings close ['<Alt>F4']\n";
         let notes = clashes(&shortcuts, listed);
         assert_eq!(notes.len(), 1);
-        assert!(notes[0].starts_with("super+space: "));
-        assert!(notes[0].contains("gsettings set org.gnome.desktop.wm.keybindings switch-input-source"));
+        assert_eq!(notes[0].keys, "super+space");
+        assert_eq!(notes[0].what, "blocked by GNOME's switch-input-source");
+        assert_eq!(
+            notes[0].fix.as_deref(),
+            Some("gsettings set org.gnome.desktop.wm.keybindings switch-input-source \"[]\"")
+        );
     }
 }

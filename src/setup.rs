@@ -57,15 +57,6 @@ fn as_root(rule: &str, why: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// A path as it is typed, with ~ for home.
-fn short(path: &Path) -> String {
-    let home = env::var("HOME").unwrap_or_default();
-    match path.strip_prefix(&home) {
-        Ok(rest) if !home.is_empty() => format!("~/{}", rest.display()),
-        _ => path.display().to_string(),
-    }
-}
-
 fn say(what: &str, how: &str) {
     println!("{what:9} {how}");
 }
@@ -85,7 +76,7 @@ pub fn setup() -> Result<(), String> {
     if new {
         write(&settings, config::EXAMPLE)?;
     }
-    say("settings", &format!("{}{}", short(&settings), if new { " (new, nothing bound)" } else { "" }));
+    say("settings", &format!("{}{}", config::short(&settings), if new { " (new, nothing bound)" } else { "" }));
 
     let exe = env::current_exe().map_err(|e| e.to_string())?;
     write(&unit_path(), &UNIT.replace("@EXE@", &exe.to_string_lossy()))?;
@@ -118,6 +109,6 @@ pub fn remove() -> Result<(), String> {
     if Path::new(RULE_PATH).exists() {
         say("rule", if as_root("", "remove") { "removed" } else { "left: sudo refused" });
     }
-    say("settings", &format!("{} (kept)", short(&config::path())));
+    say("settings", &format!("{} (kept)", config::short(&config::path())));
     Ok(())
 }

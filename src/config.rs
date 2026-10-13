@@ -4,7 +4,7 @@ use crate::engine::Bindings;
 use crate::keys::parse_sequence;
 use serde::Deserialize;
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const EXAMPLE: &str = include_str!("../assets/config.toml");
@@ -56,6 +56,14 @@ pub fn config_home() -> PathBuf {
     match env::var_os("XDG_CONFIG_HOME") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => home().join(".config"),
+    }
+}
+
+/// A path as it is typed, with ~ for home.
+pub fn short(path: &Path) -> String {
+    match path.strip_prefix(home()) {
+        Ok(rest) if env::var_os("HOME").is_some() => format!("~/{}", rest.display()),
+        _ => path.display().to_string(),
     }
 }
 

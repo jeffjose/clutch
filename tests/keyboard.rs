@@ -55,7 +55,7 @@ impl Bench {
     }
 
     fn held(&self) -> bool {
-        self.ask("status").lines().any(|line| line.starts_with("  held"))
+        self.ask("state").starts_with("holding")
     }
 
     fn press(&mut self, keys: &[(u16, i32)]) {
@@ -169,7 +169,7 @@ fn a_keyboard_that_is_not_real() {
     bench.press(&[(ALT, 1), (A, 1), (A, 0), (ALT, 0), (B, 1), (B, 0)]);
     assert_eq!(bench.seen(), [(ALT, 1), (CTRL, 1), (CTRL, 0), (ALT, 0)]);
     wait_for("the sequence to run", || bench.ran("sequence").then_some(()));
-    assert_eq!(bench.ask("status").matches("pressed once").count(), 2);
+    assert_eq!(bench.ask("status").matches("  1×").count(), 2);
 
     // The settings are read again when they are saved.
     fs::write(bench.dir.join("config.toml"), "[bind]\n\"ctrl+b\" = \"true\"\n").unwrap();

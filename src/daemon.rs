@@ -60,8 +60,8 @@ struct Daemon {
     paused: bool,
     /// The bindings are GNOME's shortcuts, as the keyboards cannot be held.
     gnome: bool,
-    /// What there is to say about the bindings GNOME was given.
-    notes: Arc<Mutex<Vec<String>>>,
+    /// How the bindings stand with GNOME, once it has been given them.
+    given: Arc<Mutex<gnome::Given>>,
     under_systemd: bool,
     started: Instant,
 }
@@ -110,7 +110,7 @@ pub fn run(options: Options) -> ! {
         out_down: HashSet::new(),
         paused: false,
         gnome: false,
-        notes: Arc::default(),
+        given: Arc::default(),
         under_systemd: env::var_os("NOTIFY_SOCKET").is_some(),
         started: Instant::now(),
     };
@@ -135,7 +135,7 @@ pub fn run(options: Options) -> ! {
         if daemon.out.is_some() && daemon.gnome {
             log("the keyboards can be held after all: taking the bindings back from GNOME");
             daemon.gnome = false;
-            gnome::sync_later(Vec::new(), Vec::new(), daemon.notes.clone());
+            gnome::sync_later(Vec::new(), Vec::new(), daemon.given.clone());
         }
         // With no udev rule the keyboards will never be ours. GNOME can
         // have the bindings in their place; it is asked for every so
@@ -342,7 +342,7 @@ impl Daemon {
             true => (Vec::new(), Vec::new()),
             false => gnome::shortcuts(&self.bindings),
         };
-        gnome::sync_later(shortcuts, said, self.notes.clone());
+        gnome::sync_later(shortcuts, said, self.given.clone());
     }
 
     /// Give the keyboards back to the programs, with no key left down.
@@ -364,8 +364,10 @@ impl Daemon {
         stream.set_read_timeout(Some(Duration::from_millis(200))).ok();
         let mut buffer = [0; 64];
         let length = stream.read(&mut buffer).unwrap_or(0);
-        let reply = match String::from_utf8_lossy(&buffer[..length]).trim() {
-            "status" => self.status(),
+        let asked = String::from_utf8_lossy(&buffer[..length]).trim().to_string();
+        let (what, with) = asked.split_once(' ').unwrap_or((&asked, ""));
+        let reply = match what {
+            "status" => self.status(with.parse().unwrap_or(0)),
             "state" => format!("{}\n", self.state()),
             "pause" => {
                 self.paused = true;
@@ -412,54 +414,94 @@ impl Daemon {
         }
     }
 
-    fn status(&self) -> String {
-        let mut text = format!(
-            "clutch {}: {}, up {}\n",
-            env!("CARGO_PKG_VERSION"),
-            self.state(),
-            ago(self.started.elapsed())
-        );
+    /// Everything about the running clutch, for a terminal this wide (or
+    /// 0 for something that is not one).
+    fn status(&self, columns: usize) -> String {
+        let line = |what: &str, how: &str| format!("{what:9} {how}\n");
+        let given = self.given.lock().unwrap();
+
+        let version = env!("CARGO_PKG_VERSION");
+        let mut text = line("clutch", &format!("{version}, up {}", ago(self.started.elapsed())));
+        text += &line("state", &self.state());
         for keyboard in &self.keyboards {
-            let held = if keyboard.held { "held" } else { "not held" };
-            text += &format!("  {held:9} {} ({})\n", keyboard.name, keyboard.path.display());
+            let waiting = if keyboard.held { "" } else { " (not held yet)" };
+            text += &line("keyboard", &format!("{}{waiting}", keyboard.name));
         }
-        text += &format!("{}\n", self.options.config.display());
+        text += &line("settings", &config::short(&self.options.config));
         if let Some(problem) = &self.problem {
-            text += &format!("  not read, the bindings are the last good ones: {problem}\n");
-        }
-        let width = self.bindings.iter().map(|b| b.keys.len()).max().unwrap_or(0);
-        for (binding, runs) in self.bindings.iter().zip(&self.runs) {
-            // GNOME does not say when a shortcut of its own was pressed.
-            match self.gnome {
-                true => text += &format!("  {:width$}  {}\n", binding.keys, binding.command),
-                false => {
-                    let pressed = times(*runs);
-                    text += &format!("  {:width$}  {}  ({pressed})\n", binding.keys, binding.command)
-                }
-            }
-        }
-        if self.bindings.is_empty() {
-            text += "  nothing bound\n";
+            text += &line("mistake", &format!("{problem} (bindings unchanged)"));
         }
         if self.gnome {
-            for note in self.notes.lock().unwrap().iter() {
-                text += &format!("  {note}\n");
+            for note in given.notes.iter().filter(|note| note.keys.is_empty()) {
+                text += &line("gnome", &note.what);
+            }
+        }
+        text += "\n";
+
+        // Each binding, what it runs, and how it has fared: where the
+        // keys are ours, how often it was pressed; with GNOME, whether
+        // it has it.
+        let fared = |binding: &Binding, runs: u32| {
+            if self.paused {
+                String::new()
+            } else if !self.gnome {
+                if runs > 0 { format!("{runs}×") } else { String::new() }
+            } else if let Some(note) = given.notes.iter().find(|note| note.keys == binding.keys) {
+                note.what.clone()
+            } else if given.notes.iter().any(|note| note.keys.is_empty()) {
+                // GNOME's settings could not be written at all.
+                "not set".into()
+            } else if given.done {
+                "in GNOME".into()
+            } else {
+                "…".into()
+            }
+        };
+        let rows: Vec<(&str, &str, String)> = self
+            .bindings
+            .iter()
+            .zip(&self.runs)
+            .map(|(binding, runs)| (binding.keys.as_str(), binding.command.as_str(), fared(binding, *runs)))
+            .collect();
+        let width = |text: &str| text.chars().count();
+        let keys = rows.iter().map(|row| width(row.0)).max().unwrap_or(0);
+        let last = rows.iter().map(|row| width(&row.2)).max().unwrap_or(0);
+        let mut command = rows.iter().map(|row| width(row.1)).max().unwrap_or(0);
+        if columns > 0 {
+            // A long command is cut short to keep each binding to a line.
+            let taken = keys + 2 + if last > 0 { last + 2 } else { 0 };
+            command = command.min(columns.saturating_sub(taken).max(16));
+        }
+        for (bound, runs, fared) in &rows {
+            let row = format!("{bound:keys$}  {:command$}  {fared}", cut(runs, command));
+            text += row.trim_end();
+            text += "\n";
+        }
+        if rows.is_empty() {
+            text += "nothing bound\n";
+        }
+        if self.gnome && !self.paused {
+            for note in &given.notes {
+                if let Some(fix) = &note.fix {
+                    text += &format!("\nto unblock {}:\n  {fix}\n", note.keys);
+                }
             }
         }
         text
     }
 }
 
-fn plural(count: usize, word: &str) -> String {
-    format!("{count} {word}{}", if count == 1 { "" } else { "s" })
+/// A text no longer than this, its end given up if it must be.
+fn cut(text: &str, length: usize) -> String {
+    if text.chars().count() <= length {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(length.saturating_sub(1)).collect();
+    format!("{kept}…")
 }
 
-fn times(runs: u32) -> String {
-    match runs {
-        0 => "not pressed yet".into(),
-        1 => "pressed once".into(),
-        runs => format!("pressed {runs} times"),
-    }
+fn plural(count: usize, word: &str) -> String {
+    format!("{count} {word}{}", if count == 1 { "" } else { "s" })
 }
 
 fn ago(elapsed: Duration) -> String {
