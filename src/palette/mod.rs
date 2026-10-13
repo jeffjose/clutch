@@ -17,11 +17,12 @@ use canvas::{Canvas, Icon, Text};
 use field::TextField;
 use softbuffer::{Context, Surface};
 use std::collections::HashMap;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::process::{self, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::{env, fs};
+use std::{env, fs, thread};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, WindowEvent};
@@ -626,9 +627,28 @@ impl Palette {
 
 /// Open the box with `typed` already in it, and stay until something is
 /// picked or it is dismissed.
+///
+/// Asked for while it is already up, it is taken down instead: the key
+/// that opens the box also closes it.
 pub fn run(typed: &str) -> Result<(), String> {
+    // The box that is up listens here, and goes when anything calls.
+    let door = config::socket().with_file_name("clutch-palette.sock");
+    if UnixStream::connect(&door).is_ok() {
+        return Ok(());
+    }
+    let _ = fs::remove_file(&door);
+    if let Ok(listener) = UnixListener::bind(&door) {
+        let door = door.clone();
+        thread::spawn(move || {
+            let _ = listener.accept();
+            let _ = fs::remove_file(&door);
+            process::exit(0);
+        });
+    }
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
-    event_loop.run_app(&mut Palette::new(typed)).map_err(|e| e.to_string())
+    let run = event_loop.run_app(&mut Palette::new(typed)).map_err(|e| e.to_string());
+    let _ = fs::remove_file(&door);
+    run
 }
 
 /// What the box would list for `typed`, a line for each.
