@@ -2,10 +2,9 @@
 
 use crate::{config, gnome};
 use std::env;
-use std::ffi::CString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -46,34 +45,47 @@ fn write(path: &Path, text: &str) -> Result<(), String> {
     fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn may_write(path: &str) -> bool {
-    let path = CString::new(path).unwrap();
-    unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
+/// Put the rule in, or with no text take it out. sudo asks for the
+/// password on the terminal itself; what else it has to say is said by us.
+fn as_root(rule: &str, why: &str) -> bool {
+    Command::new("sudo")
+        .args(["-p", &format!("password, to {why} the udev rule: ")])
+        .args(["sh", "-c", AS_ROOT, RULE_PATH, rule])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// A path as it is typed, with ~ for home.
+fn short(path: &Path) -> String {
+    let home = env::var("HOME").unwrap_or_default();
+    match path.strip_prefix(&home) {
+        Ok(rest) if !home.is_empty() => format!("~/{}", rest.display()),
+        _ => path.display().to_string(),
+    }
+}
+
+fn say(what: &str, how: &str) {
+    println!("{what:9} {how}");
 }
 
 pub fn setup() -> Result<(), String> {
-    if fs::read_to_string(RULE_PATH).ok().as_deref() != Some(RULE) {
-        println!("Letting you at the keyboards: one udev rule, which needs sudo.");
-        if let Err(problem) = ran(Command::new("sudo").args(["sh", "-c", AS_ROOT, RULE_PATH, RULE])) {
-            println!(
-                "{problem}\n\
-                 Without the rule clutch cannot hold the keyboards. On GNOME it gives\n\
-                 your bindings to GNOME as shortcuts instead; anywhere else it waits."
-            );
-        }
-    }
-    if Path::new(RULE_PATH).exists() && !may_write("/dev/uinput") {
-        println!(
-            "The rule is in, but the keyboards are not yours yet. They are while you\n\
-             are logged in at this machine itself; clutch starts by itself then."
-        );
-    }
+    let rule = if fs::read_to_string(RULE_PATH).ok().as_deref() == Some(RULE) {
+        "installed already"
+    } else if as_root(RULE, "install") {
+        "installed"
+    } else {
+        "not installed: sudo refused"
+    };
+    say("rule", rule);
 
     let settings = config::path();
-    if !settings.exists() {
+    let new = !settings.exists();
+    if new {
         write(&settings, config::EXAMPLE)?;
-        println!("{}: written, with nothing bound yet", settings.display());
     }
+    say("settings", &format!("{}{}", short(&settings), if new { " (new, nothing bound)" } else { "" }));
 
     let exe = env::current_exe().map_err(|e| e.to_string())?;
     write(&unit_path(), &UNIT.replace("@EXE@", &exe.to_string_lossy()))?;
@@ -81,9 +93,16 @@ pub fn setup() -> Result<(), String> {
     systemctl(&["enable", "--quiet", "clutch.service"])?;
     systemctl(&["restart", "clutch.service"])?;
 
-    // A moment for it to find the keyboards before it is asked.
-    sleep(Duration::from_millis(1500));
-    print!("{}", crate::ask("status")?);
+    // It takes a moment to find the keyboards, or to find it cannot.
+    let mut state = Err("not started".to_string());
+    for _ in 0..30 {
+        sleep(Duration::from_millis(100));
+        state = crate::ask("state");
+        if state.as_ref().is_ok_and(|state| !state.starts_with("waiting")) {
+            break;
+        }
+    }
+    say("service", state?.trim());
     Ok(())
 }
 
@@ -95,10 +114,10 @@ pub fn remove() -> Result<(), String> {
     if env::var("XDG_CURRENT_DESKTOP").is_ok_and(|desktop| desktop.contains("GNOME")) {
         gnome::clear();
     }
+    say("service", "removed");
     if Path::new(RULE_PATH).exists() {
-        println!("Taking the udev rule out, which needs sudo.");
-        ran(Command::new("sudo").args(["sh", "-c", AS_ROOT, RULE_PATH, ""]))?;
+        say("rule", if as_root("", "remove") { "removed" } else { "left: sudo refused" });
     }
-    println!("Removed. {} is left as it is.", config::path().display());
+    say("settings", &format!("{} (kept)", short(&config::path())));
     Ok(())
 }

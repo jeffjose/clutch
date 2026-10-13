@@ -366,6 +366,7 @@ impl Daemon {
         let length = stream.read(&mut buffer).unwrap_or(0);
         let reply = match String::from_utf8_lossy(&buffer[..length]).trim() {
             "status" => self.status(),
+            "state" => format!("{}\n", self.state()),
             "pause" => {
                 self.paused = true;
                 self.let_go();
@@ -387,22 +388,27 @@ impl Daemon {
         let _ = stream.write_all(reply.as_bytes());
     }
 
-    fn status(&self) -> String {
+    /// How things stand, in a few words.
+    fn state(&self) -> String {
         let held = self.keyboards.iter().filter(|k| k.held).count();
-        let state = if self.paused {
-            "paused"
+        if self.paused {
+            "paused".into()
         } else if self.gnome {
-            "the keyboards cannot be held here, so the bindings are GNOME's shortcuts"
+            "bindings are GNOME shortcuts (no keyboard access)".into()
         } else if self.out.is_none() {
-            "waiting to be let at the keyboards (clutch setup, or nobody is logged in here)"
+            "waiting for keyboard access".into()
         } else if held == 0 {
-            "no keyboard"
+            "no keyboard found".into()
         } else {
-            "running"
-        };
+            format!("holding {}", plural(held, "keyboard"))
+        }
+    }
+
+    fn status(&self) -> String {
         let mut text = format!(
-            "clutch {}: {state}, up {}\n",
+            "clutch {}: {}, up {}\n",
             env!("CARGO_PKG_VERSION"),
+            self.state(),
             ago(self.started.elapsed())
         );
         for keyboard in &self.keyboards {
