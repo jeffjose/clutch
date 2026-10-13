@@ -13,6 +13,7 @@ mod matching;
 
 use crate::config::{self, Config};
 use crate::desk::Desk;
+use crate::extension;
 use canvas::{Canvas, Icon, Text};
 use field::TextField;
 use softbuffer::{Context, Surface};
@@ -334,6 +335,8 @@ impl Layout {
 
 struct Palette {
     desk: Option<Desk>,
+    /// Why there is no desk, where there is none.
+    no_desk: String,
     stock: Stock,
     field: TextField,
     found: Vec<Item>,
@@ -452,11 +455,12 @@ impl Palette {
         }
         if self.found.is_empty() {
             let nothing = match (mode, &self.desk) {
-                (Mode::Shell, _) => "Type a command, and Enter runs it",
-                (Mode::Windows | Mode::Workspaces, None) => "Windows need the part of clutch that goes in GNOME: clutch setup, then log out and in",
-                _ => "Nothing matches",
+                (Mode::Shell, _) => "Type a command, and Enter runs it".to_string(),
+                (Mode::Windows | Mode::Workspaces, None) => format!("Windows cannot be seen: {}", self.no_desk),
+                _ => "Nothing matches".to_string(),
             };
-            self.text.draw(&mut canvas, left, head + pad / 4 + (row - line) / 2, px, DIM_TEXT_COLOR, nothing);
+            let nothing = self.text.clipped(&nothing, width - 2 * left, px);
+            self.text.draw(&mut canvas, left, head + pad / 4 + (row - line) / 2, px, DIM_TEXT_COLOR, &nothing);
         }
 
         // What the first letter can be.
@@ -598,6 +602,12 @@ impl Palette {
     /// The box with `typed` already in it, not yet on the screen.
     fn new(typed: &str) -> Palette {
         let desk = Desk::open();
+        // Why not, to be said where the windows would have been listed.
+        let no_desk = match (&desk, env::var_os("WAYLAND_DISPLAY")) {
+            (Some(_), _) => String::new(),
+            (None, Some(_)) => format!("GNOME extension {}", extension::health().err().unwrap_or("gave no windows".into())),
+            (None, None) => "no X display".to_string(),
+        };
         // On the monitor in use, across its middle and a fifth of the way
         // down. Where that cannot be asked, the desktop places the box.
         let monitor = desk.as_ref().and_then(Desk::monitor_in_use);
@@ -606,6 +616,7 @@ impl Palette {
         let stock = Stock::gather(desk.as_ref());
         let mut palette = Palette {
             desk,
+            no_desk,
             stock,
             field: TextField::new(typed),
             found: Vec::new(),

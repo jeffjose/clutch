@@ -3,6 +3,7 @@
 
 use crate::config::{self, Binding, Config};
 use crate::engine::{Engine, Out};
+use crate::extension;
 use crate::gnome;
 use crate::style::{Style, CYAN, GREEN, RED, VERB, YELLOW};
 use crate::setup::RULE_PATH;
@@ -462,6 +463,13 @@ impl Daemon {
             }
         }
         text += &style.line(CYAN, "Settings", &config::short(&self.options.config));
+        // On GNOME, whether the box can see the windows.
+        if self.gnome || extension::installed() {
+            match extension::health() {
+                Ok(()) => text += &style.line(GREEN, "Extension", "loaded in GNOME's shell"),
+                Err(why) => text += &style.warning(&format!("GNOME extension {why}; until then the box cannot see windows")),
+            }
+        }
         if let Some(problem) = &self.problem {
             text += &style.error(&format!("{problem}; the bindings are as they were"));
         }

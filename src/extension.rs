@@ -115,6 +115,49 @@ fn enable(on: bool) {
     let _ = gnome::gsettings(&["set", LIST[0], LIST[1], &gnome::list(&enabled)]);
 }
 
+pub fn installed() -> bool {
+    dir().join("extension.js").exists()
+}
+
+/// Whether the shell has this extension running, and if not, why not,
+/// as nearly as can be told from outside the shell.
+pub fn health() -> Result<(), String> {
+    if !dir().join("extension.js").exists() {
+        return Err("not installed: run `clutch setup`".into());
+    }
+    let asked = Command::new("gdbus")
+        .args(["call", "--session", "--dest", "org.gnome.Shell", "--object-path", PATH, "--method"])
+        .arg(format!("{NAME}.State"))
+        .output()
+        .map_err(|e| format!("gdbus: {e}"))?;
+    if asked.status.success() {
+        let printed = String::from_utf8_lossy(&asked.stdout);
+        return match unwrap(&printed) {
+            Some(state) if state.contains(&format!("\"version\":{VERSION},")) => Ok(()),
+            Some(_) => Err("an older one is loaded: log out and in".into()),
+            None => Err(format!("its answer could not be read: {}", printed.chars().take(60).collect::<String>())),
+        };
+    }
+    let enabled = gnome::gsettings(&["get", "org.gnome.shell", "enabled-extensions"]);
+    if enabled.is_ok_and(|list| !gnome::strings(&list).iter().any(|uuid| uuid == UUID)) {
+        return Err("switched off: run `clutch setup`".into());
+    }
+    // What the shell itself says of it, where it says anything.
+    let info = Command::new("gnome-extensions").args(["info", UUID]).output();
+    let info = info.map(|output| String::from_utf8_lossy(&output.stdout).into_owned()).unwrap_or_default();
+    let said = |label: &str| info.lines().find_map(|line| line.trim().strip_prefix(label).map(|rest| rest.trim().to_string()));
+    match (said("State:"), said("Error:")) {
+        (Some(state), Some(error)) => Err(format!("the shell has it as {state}: {error}")),
+        (Some(state), None) if state != "ACTIVE" && state != "ENABLED" => Err(format!("the shell has it as {state}")),
+        (None, _) => Err("the shell has not found it yet: log out and in".into()),
+        // Running, by the shell's account, and yet it does not answer.
+        _ => {
+            let why = String::from_utf8_lossy(&asked.stderr);
+            Err(format!("loaded, but it does not answer: {}", why.lines().next().unwrap_or("").trim()))
+        }
+    }
+}
+
 /// Ask it for something. What it says back is as gdbus prints it.
 pub fn call(method: &str, arguments: &[String]) -> Option<String> {
     let output = Command::new("gdbus")
