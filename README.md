@@ -72,8 +72,14 @@ clutch move-monitor        # the window in front, to the next monitor
 
 None of these needs clutch running: they are programs that start, do
 their one thing and are gone, so a shortcut of the desktop's can run
-them as well. Windows can be seen and moved on X11; on Wayland the box
-has the applications, the bindings and the shell.
+them as well.
+
+On X11 any program can see and move the windows. On Wayland only the
+desktop can, so on GNOME `clutch setup` also puts a small extension in
+the shell, which lists and moves them for clutch and puts the box in
+the middle of the screen with the keyboard. It needs no sudo, and one
+logout to load. Without it, and on other Wayland desktops, the box has
+the applications, the bindings and the shell.
 
 ## Without sudo
 

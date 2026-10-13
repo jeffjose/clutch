@@ -27,6 +27,7 @@ use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::platform::wayland::WindowAttributesExtWayland;
 use winit::platform::x11::{WindowAttributesExtX11, WindowType};
 use winit::window::{Window, WindowId, WindowLevel};
 
@@ -172,7 +173,8 @@ impl Stock {
             for window in &windows {
                 let place = window.workspace.filter(|at| *at != current).and_then(|at| names.get(at as usize));
                 let mut item = Item::new(glyph::WINDOW, &window.title, &window.class, place.map_or("", |name| name), Action::Activate(window.id));
-                item.picture = Picture::Window(window.id);
+                // Its own icon where it brings one; else its program's, by name.
+                item.picture = if window.icon.is_empty() { Picture::Window(window.id) } else { Picture::Named(window.icon.clone()) };
                 stock.windows.push(item);
             }
             for (at, name) in names.iter().enumerate() {
@@ -182,7 +184,7 @@ impl Stock {
             // What can be done to the window that was in front.
             if let Some(window) = active.filter(|id| windows.iter().any(|window| window.id == *id)) {
                 let to = |glyph, name: &str, action| Item::new(glyph, name, "", "window", action);
-                if desk.monitors().len() > 1 {
+                if desk.monitor_count() > 1 {
                     stock.commands.push(to(glyph::RIGHT, "Move window to next monitor", Action::MoveToMonitor { window, back: false }));
                     stock.commands.push(to(glyph::LEFT, "Move window to previous monitor", Action::MoveToMonitor { window, back: true }));
                 }
@@ -450,7 +452,7 @@ impl Palette {
         if self.found.is_empty() {
             let nothing = match (mode, &self.desk) {
                 (Mode::Shell, _) => "Type a command, and Enter runs it",
-                (Mode::Windows | Mode::Workspaces, None) => "Windows cannot be seen from here on Wayland yet",
+                (Mode::Windows | Mode::Workspaces, None) => "Windows need the part of clutch that goes in GNOME: clutch setup, then log out and in",
                 _ => "Nothing matches",
             };
             self.text.draw(&mut canvas, left, head + pad / 4 + (row - line) / 2, px, DIM_TEXT_COLOR, nothing);
@@ -524,10 +526,20 @@ impl ApplicationHandler for Palette {
         if self.window.is_some() {
             return;
         }
+        // Where the desktop could not be asked which monitor is in use,
+        // the letters are sized for the first one there is.
+        if self.place.is_none() {
+            let monitor = event_loop.primary_monitor().or_else(|| event_loop.available_monitors().next());
+            if let Some(monitor) = monitor {
+                self.layout = Layout::for_monitor(monitor.size().height as i32);
+            }
+        }
         let size = PhysicalSize::new(self.layout.width as u32, self.layout.height() as u32);
-        let mut attributes = Window::default_attributes()
-            .with_title("clutch")
-            .with_name("clutch", "clutch")
+        // The name is what GNOME's shell knows the box by, to place it.
+        let attributes = Window::default_attributes().with_title("clutch");
+        let attributes = WindowAttributesExtX11::with_name(attributes, "clutch", "clutch");
+        let attributes = WindowAttributesExtWayland::with_name(attributes, "clutch", "clutch");
+        let mut attributes = attributes
             .with_x11_window_type(vec![WindowType::Dialog])
             .with_decorations(false)
             .with_resizable(false)

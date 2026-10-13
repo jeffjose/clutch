@@ -1,8 +1,11 @@
 //! The windows, monitors and workspaces of the desktop, and what can be
-//! done to them. On X11 any program may ask the window manager; on
-//! Wayland none may, so there is no desk there.
+//! done to them. On X11 any program may ask the window manager. On
+//! Wayland none may: there GNOME's shell is asked, through the part of
+//! clutch that `clutch setup` puts in it.
 
+use crate::extension;
 use crate::palette::canvas::Icon;
+use serde::Deserialize;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
@@ -19,9 +22,175 @@ pub struct Window {
     pub class: String,
     /// Which workspace it is on, counted from 0; none if on them all.
     pub workspace: Option<u32>,
+    /// The name of its program's icon, where the desktop says: on X11 a
+    /// window brings its icon itself.
+    pub icon: String,
 }
 
-pub struct Desk {
+/// The desktop, whichever way it is reached.
+pub enum Desk {
+    X11(X11),
+    Gnome(Gnome),
+}
+
+impl Desk {
+    pub fn open() -> Option<Desk> {
+        match env::var_os("WAYLAND_DISPLAY") {
+            Some(_) => Gnome::open().map(Desk::Gnome),
+            None => X11::open().map(Desk::X11),
+        }
+    }
+
+    /// The window that has the keyboard.
+    pub fn active(&self) -> Option<u32> {
+        match self {
+            Desk::X11(desk) => desk.active(),
+            Desk::Gnome(desk) => desk.state.windows.iter().find(|window| window.front).map(|window| window.id),
+        }
+    }
+
+    /// The windows a taskbar would show, the one used last first.
+    pub fn windows(&self) -> Vec<Window> {
+        match self {
+            Desk::X11(desk) => desk.windows(),
+            Desk::Gnome(desk) => desk.windows(),
+        }
+    }
+
+    /// A window's own icon, where it brings one.
+    pub fn icon(&self, window: u32, size: usize) -> Option<Icon> {
+        match self {
+            Desk::X11(desk) => desk.icon(window, size),
+            Desk::Gnome(_) => None,
+        }
+    }
+
+    pub fn monitor_count(&self) -> usize {
+        match self {
+            Desk::X11(desk) => desk.monitors().len(),
+            Desk::Gnome(desk) => desk.state.monitors,
+        }
+    }
+
+    /// The monitor the pointer is on, where a window may say where it
+    /// goes. GNOME's shell places clutch's box itself.
+    pub fn monitor_in_use(&self) -> Option<Area> {
+        match self {
+            Desk::X11(desk) => desk.monitor_in_use(),
+            Desk::Gnome(_) => None,
+        }
+    }
+
+    /// The names of the workspaces, and which one is in view.
+    pub fn workspaces(&self) -> (Vec<String>, u32) {
+        match self {
+            Desk::X11(desk) => desk.workspaces(),
+            Desk::Gnome(desk) => (desk.state.workspaces.clone(), desk.state.workspace),
+        }
+    }
+
+    pub fn activate(&self, window: u32) {
+        match self {
+            Desk::X11(desk) => desk.activate(window),
+            Desk::Gnome(desk) => desk.ask("Activate", &[window.to_string()]),
+        }
+    }
+
+    pub fn close(&self, window: u32) {
+        match self {
+            Desk::X11(desk) => desk.close(window),
+            Desk::Gnome(desk) => desk.ask("Close", &[window.to_string()]),
+        }
+    }
+
+    pub fn toggle_maximized(&self, window: u32) {
+        match self {
+            Desk::X11(desk) => desk.toggle_maximized(window),
+            Desk::Gnome(desk) => desk.ask("Maximize", &[window.to_string()]),
+        }
+    }
+
+    pub fn toggle_fullscreen(&self, window: u32) {
+        match self {
+            Desk::X11(desk) => desk.toggle_fullscreen(window),
+            Desk::Gnome(desk) => desk.ask("Fullscreen", &[window.to_string()]),
+        }
+    }
+
+    /// Move a window to the next monitor, or with `back` the one before.
+    /// `None` if there is no other.
+    pub fn move_to_monitor(&self, window: u32, back: bool) -> Option<()> {
+        match self {
+            Desk::X11(desk) => desk.move_to_monitor(window, back),
+            Desk::Gnome(desk) => (desk.state.monitors > 1).then(|| desk.ask("MoveToMonitor", &[window.to_string(), back.to_string()])),
+        }
+    }
+
+    pub fn go_to_workspace(&self, workspace: u32) {
+        match self {
+            Desk::X11(desk) => desk.go_to_workspace(workspace),
+            Desk::Gnome(desk) => desk.ask("GoTo", &[workspace.to_string()]),
+        }
+    }
+
+    /// Send a window to another workspace, without following it there.
+    pub fn send_to_workspace(&self, window: u32, workspace: u32) {
+        match self {
+            Desk::X11(desk) => desk.send_to_workspace(window, workspace),
+            Desk::Gnome(desk) => desk.ask("SendTo", &[window.to_string(), workspace.to_string()]),
+        }
+    }
+}
+
+/// GNOME's shell, asked through clutch's extension. Everything there is
+/// to list comes in one answer, as the box opens.
+pub struct Gnome {
+    state: State,
+}
+
+#[derive(Deserialize)]
+struct State {
+    windows: Vec<GnomeWindow>,
+    workspaces: Vec<String>,
+    workspace: u32,
+    monitors: usize,
+}
+
+#[derive(Deserialize)]
+struct GnomeWindow {
+    id: u32,
+    title: String,
+    program: String,
+    icon: String,
+    /// Below 0 for a window that is on every workspace.
+    workspace: i64,
+    front: bool,
+}
+
+impl Gnome {
+    fn open() -> Option<Gnome> {
+        let printed = extension::call("State", &[])?;
+        let state = serde_json::from_str(&extension::unwrap(&printed)?).ok()?;
+        Some(Gnome { state })
+    }
+
+    fn windows(&self) -> Vec<Window> {
+        let window = |w: &GnomeWindow| Window {
+            id: w.id,
+            title: w.title.clone(),
+            class: w.program.clone(),
+            workspace: u32::try_from(w.workspace).ok(),
+            icon: w.icon.clone(),
+        };
+        self.state.windows.iter().map(window).collect()
+    }
+
+    fn ask(&self, method: &str, arguments: &[String]) {
+        extension::call(method, arguments);
+    }
+}
+
+pub struct X11 {
     conn: RustConnection,
     root: u32,
     atoms: RefCell<HashMap<&'static str, u32>>,
@@ -34,8 +203,8 @@ type Area = (i32, i32, i32, i32);
 /// application's own it may refuse.
 const FROM_PAGER: u32 = 2;
 
-impl Desk {
-    pub fn open() -> Option<Desk> {
+impl X11 {
+    pub fn open() -> Option<X11> {
         // Under Wayland there is still an X display, for old programs,
         // and it knows only of their windows.
         if env::var_os("WAYLAND_DISPLAY").is_some() {
@@ -43,7 +212,7 @@ impl Desk {
         }
         let (conn, screen) = x11rb::connect(None).ok()?;
         let root = conn.setup().roots.get(screen)?.root;
-        Some(Desk { conn, root, atoms: RefCell::default() })
+        Some(X11 { conn, root, atoms: RefCell::default() })
     }
 
     fn atom(&self, name: &'static str) -> u32 {
@@ -102,7 +271,7 @@ impl Desk {
             let class = class.split(|byte| *byte == 0).filter(|part| !part.is_empty()).next_back();
             let class = class.map_or(String::new(), |class| String::from_utf8_lossy(class).into_owned());
             let workspace = self.numbers(id, "_NET_WM_DESKTOP", 1).first().copied().filter(|at| *at != u32::MAX);
-            windows.push(Window { id, title, class, workspace });
+            windows.push(Window { id, title, class, workspace, icon: String::new() });
         }
         windows
     }
@@ -251,5 +420,25 @@ impl Desk {
     /// Send a window to another workspace, without following it there.
     pub fn send_to_workspace(&self, window: u32, workspace: u32) {
         self.ask(window, "_NET_WM_DESKTOP", [workspace, FROM_PAGER, 0, 0, 0]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_the_shell_answers() {
+        // As gdbus printed it, from the extension run against a made-up shell.
+        let printed = r#"('{"windows":[{"id":7,"title":"It\\u0027s a \\u201ctest\\u201d \\\\ ok \\u2014 \\ud55c\\uad6d","program":"Firefox","icon":"firefox","workspace":0,"front":true},{"id":12,"title":"everywhere","program":"x","icon":"","workspace":-1,"front":false}],"workspaces":["Workspace 1","Workspace 2"],"workspace":1,"monitors":2}',)"#;
+        let state: State = serde_json::from_str(&extension::unwrap(printed).unwrap()).unwrap();
+        let desk = Desk::Gnome(Gnome { state });
+        let windows = desk.windows();
+        assert_eq!(windows[0].title, "It's a “test” \\ ok — 한국");
+        assert_eq!((windows[0].class.as_str(), windows[0].icon.as_str(), windows[0].workspace), ("Firefox", "firefox", Some(0)));
+        assert_eq!(windows[1].workspace, None);
+        assert_eq!(desk.active(), Some(7));
+        assert_eq!(desk.workspaces(), (vec!["Workspace 1".to_string(), "Workspace 2".to_string()], 1));
+        assert_eq!(desk.monitor_count(), 2);
     }
 }

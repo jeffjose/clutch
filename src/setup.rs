@@ -1,6 +1,6 @@
 //! Putting clutch on a machine, and taking it off again.
 
-use crate::{config, gnome};
+use crate::{config, extension, gnome};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -70,6 +70,10 @@ pub fn setup() -> Result<(), String> {
         "not installed: sudo refused"
     };
     say("rule", rule);
+    // On GNOME, the part of clutch that sees the windows for it.
+    if let Some(extension) = extension::install() {
+        say("extension", extension);
+    }
 
     let settings = config::path();
     let new = !settings.exists();
@@ -106,6 +110,7 @@ pub fn remove() -> Result<(), String> {
         gnome::clear();
         // And GNOME's own, which `clutch fix` took, go back to it.
         gnome::restore();
+        extension::remove();
     }
     say("service", "removed");
     if Path::new(RULE_PATH).exists() {

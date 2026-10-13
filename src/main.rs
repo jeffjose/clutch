@@ -2,6 +2,7 @@ mod config;
 mod daemon;
 mod desk;
 mod engine;
+mod extension;
 mod gnome;
 mod keys;
 mod palette;
@@ -67,7 +68,7 @@ fn open_palette(mut rest: Vec<String>) -> Result<(), String> {
     palette::picture(&typed, row, &rest[0])
 }
 
-const NO_DESK: &str = "windows cannot be seen from here on Wayland yet";
+const NO_DESK: &str = "the windows cannot be seen: on Wayland that needs GNOME, `clutch setup`, and logging out and in";
 
 /// Move the window in front to the next monitor, or the one before.
 fn move_monitor(which: Option<&str>) -> Result<(), String> {
