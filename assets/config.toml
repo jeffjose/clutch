@@ -1,0 +1,23 @@
+# clutch: the keys it takes, and what each runs.
+#
+# Nothing here is bound until you take the # off the front of a line.
+#
+# A key is written with its modifiers: "ctrl+space", "super+shift+s",
+# "print". The modifiers are ctrl, shift, alt and super. Keys pressed one
+# after another have a space between them: "super+space t" is Super+Space,
+# then T.
+#
+# What a key runs is a shell command. This file is read again whenever it
+# is saved, and `clutch status` shows what is bound.
+
+# How long, in milliseconds, a sequence waits for its next key.
+# timeout = 2000
+
+[bind]
+# A drop-down terminal:
+# "ctrl+space" = "tilix --quake"
+#   on GNOME, with the ddterm extension:
+# "ctrl+space" = "gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/ddterm --method com.github.amezin.ddterm.Extension.Toggle"
+
+# A sequence:
+# "super+space t" = "xterm"

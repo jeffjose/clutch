@@ -1,0 +1,5 @@
+# clutch reads the keyboards and writes what it does not keep to a keyboard
+# of its own. This lets whoever is logged in at the machine do both, for
+# as long as they are.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", TAG+="uaccess"
