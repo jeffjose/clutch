@@ -232,6 +232,14 @@ pub fn sync(shortcuts: &[Shortcut]) -> Vec<Note> {
         let _ = gsettings(&["reset-recursively", &format!("{ENTRY}:{path}")]);
     }
 
+    notes.extend(blocked(shortcuts));
+    notes
+}
+
+/// A note for each of ours that a shortcut of GNOME's is on, as GNOME's
+/// settings stand now.
+pub fn blocked(shortcuts: &[Shortcut]) -> Vec<Note> {
+    let mut notes = Vec::new();
     for schema in THEIRS {
         // Not every GNOME has every one of these.
         if let Ok(listed) = gsettings(&["list-recursively", schema]) {
@@ -262,24 +270,32 @@ fn taken_path() -> PathBuf {
 
 /// Take from GNOME the shortcuts that are in the way of our bindings:
 /// the keys we want and no others that shortcut may also be on. Returns
-/// a line for each.
-pub fn fix(notes: &[Note]) -> Vec<String> {
+/// for each the binding, and the shortcut it was taken from or why it
+/// could not be.
+pub fn fix(notes: &[Note]) -> Vec<(String, Result<String, String>)> {
     let mut said = Vec::new();
     let mut taken = fs::read_to_string(taken_path()).unwrap_or_default();
     for (note, fix) in notes.iter().filter_map(|note| Some((note, note.fix.as_ref()?))) {
-        let Ok(was) = gsettings(&["get", &fix.schema, &fix.key]) else { continue };
-        let left: Vec<String> = strings(&was).into_iter().filter(|keys| normal(keys) != normal(&fix.accelerator)).collect();
-        match gsettings(&["set", &fix.schema, &fix.key, &list(&left)]) {
-            Ok(_) => {
-                // The first time only: after that it is no longer GNOME's own.
-                let place = format!("{} {} ", fix.schema, fix.key);
-                if !taken.lines().any(|line| line.starts_with(&place)) {
-                    taken += &format!("{place}{}\n", was.trim());
-                }
-                said.push(format!("{}: taken from GNOME's {}", note.keys, fix.key.replace('-', " ")));
+        let without = |value: &str| -> Vec<String> {
+            strings(value).into_iter().filter(|keys| normal(keys) != normal(&fix.accelerator)).collect()
+        };
+        let outcome = gsettings(&["get", &fix.schema, &fix.key]).and_then(|was| {
+            gsettings(&["set", &fix.schema, &fix.key, &list(&without(&was))])?;
+            // Looked at again: a setting that is locked takes no change
+            // and says nothing of it.
+            let now = gsettings(&["get", &fix.schema, &fix.key])?;
+            if without(&now).len() != strings(&now).len() {
+                return Err(format!("GNOME kept it: {} {} cannot be changed here", fix.schema, fix.key));
             }
-            Err(problem) => said.push(format!("{}: {problem}", note.keys)),
-        }
+            // Written down the first time only: after that it is no
+            // longer GNOME's own.
+            let place = format!("{} {} ", fix.schema, fix.key);
+            if !taken.lines().any(|line| line.starts_with(&place)) {
+                taken += &format!("{place}{}\n", was.trim());
+            }
+            Ok(fix.key.replace('-', " "))
+        });
+        said.push((note.keys.clone(), outcome));
     }
     let path = taken_path();
     if let Some(dir) = path.parent() {

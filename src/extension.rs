@@ -63,8 +63,8 @@ pub fn loaded() -> bool {
 
 /// Put it in and turn it on. A shell on Wayland only finds a new
 /// extension when it starts, which is at the next login. Returns what
-/// came of it, or `None` where there is no GNOME shell.
-pub fn install() -> Option<&'static str> {
+/// was done and to what, or `None` where there is no GNOME shell.
+pub fn install() -> Option<(&'static str, &'static str)> {
     let version = shell_version()?;
     let dir = dir();
     fs::create_dir_all(&dir).ok()?;
@@ -80,10 +80,10 @@ pub fn install() -> Option<&'static str> {
     };
     quietly(&["enable", UUID]);
     Some(match (loaded(), changed) {
-        (true, false) => "loaded",
+        (true, false) => ("Loaded", "GNOME extension"),
         // The shell keeps the one it started with.
-        (true, true) => "updated: log out and in to load the new one",
-        (false, _) => "installed: log out and in once to load it",
+        (true, true) => ("Updated", "GNOME extension (log out and in to load the new one)"),
+        (false, _) => ("Installed", "GNOME extension (log out and in once to load it)"),
     })
 }
 

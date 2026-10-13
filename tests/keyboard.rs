@@ -186,7 +186,7 @@ fn a_keyboard_that_is_not_real() {
     // Paused, the keyboard is anyone's; resumed, it is clutch's again.
     assert!(!grabbable(&bench.node));
     bench.ask("pause");
-    assert!(bench.ask("status").contains("paused"));
+    assert!(bench.ask("status").contains("Paused"));
     assert!(grabbable(&bench.node));
     bench.ask("resume");
     wait_for("clutch to hold the keyboard again", || bench.held().then_some(()));

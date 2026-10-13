@@ -7,6 +7,7 @@ mod gnome;
 mod keys;
 mod palette;
 mod setup;
+mod style;
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -47,6 +48,19 @@ fn ask(what: &str) -> Result<String, String> {
     let mut reply = String::new();
     stream.read_to_string(&mut reply).map_err(not_running)?;
     Ok(reply)
+}
+
+/// Ask the running clutch for something and print its answer, written
+/// for this terminal.
+fn tell(what: &str) -> Result<(), String> {
+    let colour = if style::Style::of_terminal().colour { " colour" } else { "" };
+    let reply = ask(&format!("{what} {}{colour}", columns()))?;
+    // A new clutch was installed over one that is still running.
+    if reply.starts_with("not something clutch does") {
+        return Err(format!("the clutch that is running is older than this one and has no `{what}`: systemctl --user restart clutch"));
+    }
+    print!("{reply}");
+    Ok(())
 }
 
 /// `clutch palette [TEXT]` opens the box with TEXT typed. `--list TEXT`
@@ -150,12 +164,7 @@ fn main() {
         "windows" => palette::run("@"),
         "move-monitor" => move_monitor(arguments.next().as_deref()),
         "raise" => raise(arguments.collect()),
-        "status" => {
-            // In colour on a terminal, unless asked not to.
-            let colour = columns() > 0 && env::var_os("NO_COLOR").is_none();
-            ask(&format!("status {}{}", columns(), if colour { " colour" } else { "" })).map(|reply| print!("{reply}"))
-        }
-        "pause" | "resume" | "reload" | "fix" => ask(&command).map(|reply| print!("{reply}")),
+        "status" | "pause" | "resume" | "reload" | "fix" => tell(&command),
         "" | "help" | "-h" | "--help" => {
             print!("{HELP}");
             Ok(())
@@ -167,7 +176,7 @@ fn main() {
         other => Err(format!("no command {other} (clutch --help)")),
     };
     if let Err(problem) = done {
-        eprintln!("clutch: {problem}");
+        eprint!("{}", style::Style::of_terminal().error(&problem));
         exit(1);
     }
 }

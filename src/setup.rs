@@ -1,5 +1,6 @@
 //! Putting clutch on a machine, and taking it off again.
 
+use crate::style::{Style, GREEN, YELLOW};
 use crate::{config, extension, gnome};
 use std::env;
 use std::fs;
@@ -57,36 +58,34 @@ fn as_root(rule: &str, why: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-fn say(what: &str, how: &str) {
-    println!("{what:9} {how}");
-}
-
 pub fn setup() -> Result<(), String> {
-    let rule = if fs::read_to_string(RULE_PATH).ok().as_deref() == Some(RULE) {
-        "installed already"
+    let style = Style::of_terminal();
+    if fs::read_to_string(RULE_PATH).ok().as_deref() == Some(RULE) {
+        print!("{}", style.line(GREEN, "Unchanged", "udev rule"));
     } else if as_root(RULE, "install") {
-        "installed"
+        print!("{}", style.line(GREEN, "Installed", "udev rule"));
     } else {
-        "not installed: sudo refused"
-    };
-    say("rule", rule);
+        print!("{}", style.warning("udev rule not installed: sudo refused, so the keyboard cannot be held here"));
+    }
     // On GNOME, the part of clutch that sees the windows for it.
-    if let Some(extension) = extension::install() {
-        say("extension", extension);
+    if let Some((done, what)) = extension::install() {
+        print!("{}", style.line(GREEN, done, what));
     }
 
     let settings = config::path();
-    let new = !settings.exists();
-    if new {
+    if settings.exists() {
+        print!("{}", style.line(GREEN, "Unchanged", &config::short(&settings)));
+    } else {
         write(&settings, config::EXAMPLE)?;
+        print!("{}", style.line(GREEN, "Created", &format!("{} (nothing bound yet)", config::short(&settings))));
     }
-    say("settings", &format!("{}{}", config::short(&settings), if new { " (new, nothing bound)" } else { "" }));
 
     let exe = env::current_exe().map_err(|e| e.to_string())?;
     write(&unit_path(), &UNIT.replace("@EXE@", &exe.to_string_lossy()))?;
     systemctl(&["daemon-reload"])?;
     systemctl(&["enable", "--quiet", "clutch.service"])?;
     systemctl(&["restart", "clutch.service"])?;
+    print!("{}", style.line(GREEN, "Started", "clutch.service"));
 
     // It takes a moment to find the keyboards, or to find it cannot.
     let mut state = Err("not started".to_string());
@@ -97,25 +96,38 @@ pub fn setup() -> Result<(), String> {
             break;
         }
     }
-    say("service", state?.trim());
+    let state = state?;
+    match state.trim() {
+        waiting if waiting.starts_with("waiting") => print!("{}", style.line(YELLOW, "Waiting", "for keyboard access")),
+        state => print!("{}", style.line(GREEN, "Running", state)),
+    }
     Ok(())
 }
 
 pub fn remove() -> Result<(), String> {
+    let style = Style::of_terminal();
     let _ = systemctl(&["disable", "--quiet", "--now", "clutch.service"]);
     let _ = fs::remove_file(unit_path());
     let _ = systemctl(&["daemon-reload"]);
+    print!("{}", style.line(GREEN, "Removed", "clutch.service"));
     // Any shortcuts of ours that GNOME was given.
     if env::var("XDG_CURRENT_DESKTOP").is_ok_and(|desktop| desktop.contains("GNOME")) {
         gnome::clear();
+        print!("{}", style.line(GREEN, "Removed", "GNOME shortcuts"));
         // And GNOME's own, which `clutch fix` took, go back to it.
-        gnome::restore();
+        match gnome::restore() {
+            0 => {}
+            given => print!("{}", style.line(GREEN, "Restored", &format!("{given} of GNOME's own shortcuts"))),
+        }
         extension::remove();
+        print!("{}", style.line(GREEN, "Removed", "GNOME extension"));
     }
-    say("service", "removed");
     if Path::new(RULE_PATH).exists() {
-        say("rule", if as_root("", "remove") { "removed" } else { "left: sudo refused" });
+        match as_root("", "remove") {
+            true => print!("{}", style.line(GREEN, "Removed", "udev rule")),
+            false => print!("{}", style.warning("udev rule left in place: sudo refused")),
+        }
     }
-    say("settings", &format!("{} (kept)", config::short(&config::path())));
+    print!("{}", style.line(GREEN, "Kept", &config::short(&config::path())));
     Ok(())
 }

@@ -4,6 +4,7 @@
 use crate::config::{self, Binding, Config};
 use crate::engine::{Engine, Out};
 use crate::gnome;
+use crate::style::{Style, CYAN, GREEN, RED, VERB, YELLOW};
 use crate::setup::RULE_PATH;
 use std::sync::{Arc, Mutex};
 use crate::keys::{KEY_BACKSPACE, KEY_ENTER, KEY_ESC};
@@ -117,9 +118,20 @@ pub fn run(options: Options) -> ! {
     daemon.reload();
     notify("READY=1");
 
+    // The program this is, and when it was written: installing a newer
+    // clutch leaves the old one running until it is told to stop.
+    let installed = |path: &PathBuf| fs::metadata(path).and_then(|file| file.modified()).ok();
+    let program = env::current_exe().ok().filter(|_| daemon.under_systemd);
+    let written = program.as_ref().and_then(installed);
+
     let mut looked = None::<Instant>;
     let mut asked = None::<Instant>;
     loop {
+        if let Some(newer) = program.as_ref().and_then(installed).filter(|now| Some(*now) != written) {
+            let _ = newer;
+            // systemd starts the new one in its place.
+            fail("a newer clutch was installed: making way for it");
+        }
         // The seat is ours while we may write to uinput: with the udev
         // rule that is while we are logged in at the machine itself.
         let ours = may_write(UINPUT);
@@ -365,13 +377,15 @@ impl Daemon {
         let mut buffer = [0; 64];
         let length = stream.read(&mut buffer).unwrap_or(0);
         let asked = String::from_utf8_lossy(&buffer[..length]).trim().to_string();
-        let (what, with) = asked.split_once(' ').unwrap_or((&asked, ""));
+        // What is asked, then how wide the asker's terminal is and
+        // whether it takes colour.
+        let mut words = asked.split(' ');
+        let what = words.next().unwrap_or("");
+        let columns = words.next().and_then(|columns| columns.parse().ok()).unwrap_or(0);
+        let style = Style { colour: words.next() == Some("colour") };
         let reply = match what {
-            "status" => {
-                let (columns, colour) = with.split_once(' ').unwrap_or((with, ""));
-                self.status(columns.parse().unwrap_or(0), colour == "colour")
-            }
-            "fix" => self.fix(),
+            "status" => self.status(columns, style),
+            "fix" => self.fix(style),
             "state" => format!("{}\n", self.state()),
             "pause" => {
                 self.paused = true;
@@ -379,14 +393,14 @@ impl Daemon {
                 if self.gnome {
                     self.give_to_gnome();
                 }
-                "paused: the keys are as they were without clutch\n".into()
+                style.line(YELLOW, "Paused", "the keys are as they were without clutch")
             }
             "resume" => {
                 self.paused = false;
                 if self.gnome {
                     self.give_to_gnome();
                 }
-                "resumed\n".into()
+                style.line(GREEN, "Resumed", "clutch")
             }
             "reload" => {
                 let said = self.reload();
@@ -395,8 +409,12 @@ impl Daemon {
                 if self.gnome && said == "unchanged" {
                     self.give_to_gnome();
                 }
-                format!("{said}\n")
+                match &self.problem {
+                    Some(problem) => style.error(&format!("{problem}; the bindings are as they were")),
+                    None => style.line(GREEN, "Reloaded", &format!("{}, {said}", config::short(&self.options.config))),
+                }
             }
+            // An older clutch says the same of what a newer one asks.
             other => format!("not something clutch does: {other}\n"),
         };
         let _ = stream.write_all(reply.as_bytes());
@@ -418,38 +436,38 @@ impl Daemon {
         }
     }
 
-    /// Everything about the running clutch: how it stands, then a line
-    /// for each binding with a mark for whether it works. For a terminal
-    /// `columns` wide, or 0 for something that is not one, and in colour
-    /// if asked.
-    fn status(&self, columns: usize, colour: bool) -> String {
-        let paint = |code: &str, text: &str| match colour {
-            true => format!("\x1b[{code}m{text}\x1b[0m"),
-            false => text.to_string(),
-        };
-        let (bold, dim, green, red, yellow) = ("1", "2", "32", "31", "33");
+    /// Everything about the running clutch, as cargo would say it: how
+    /// it stands, then each binding under a word for whether it works.
+    /// For a terminal `columns` wide, or 0 for something that is not one.
+    fn status(&self, columns: usize, style: Style) -> String {
         let given = self.given.lock().unwrap();
-        let working = !self.paused && (self.gnome || self.keyboards.iter().any(|k| k.held));
+        let holding = self.keyboards.iter().any(|k| k.held);
+        let working = !self.paused && (self.gnome || holding);
 
-        let version = format!("clutch {}", env!("CARGO_PKG_VERSION"));
-        let up = format!(" · up {}", ago(self.started.elapsed()));
-        let mut text = format!("{}{}\n{}\n", paint(bold, &version), paint(dim, &up), self.state());
-        for keyboard in &self.keyboards {
-            let waiting = if keyboard.held { "" } else { " (not held yet)" };
-            text += &paint(dim, &format!("  {}{waiting}", keyboard.name));
-            text += "\n";
+        let version = format!("clutch {}, up {}", env!("CARGO_PKG_VERSION"), ago(self.started.elapsed()));
+        let mut text = match (self.paused, working) {
+            (true, _) => style.line(YELLOW, "Paused", &version),
+            (_, true) => style.line(GREEN, "Running", &version),
+            _ => style.line(YELLOW, "Waiting", &version),
+        };
+        if self.gnome {
+            text += &style.line(CYAN, "Using", "GNOME shortcuts (the keyboard cannot be held here)");
+        } else if self.out.is_none() {
+            text += &style.under("for keyboard access: `clutch setup`, and be logged in at this machine");
         }
-        text += &paint(dim, &config::short(&self.options.config));
-        text += "\n";
+        for keyboard in &self.keyboards {
+            match keyboard.held {
+                true => text += &style.line(GREEN, "Holding", &keyboard.name),
+                false => text += &style.line(YELLOW, "Watching", &format!("{} (not held yet)", keyboard.name)),
+            }
+        }
+        text += &style.line(CYAN, "Settings", &config::short(&self.options.config));
         if let Some(problem) = &self.problem {
-            text += &paint(red, &format!("  {problem}"));
-            text += &paint(dim, " (so the bindings are as they were)");
-            text += "\n";
+            text += &style.error(&format!("{problem}; the bindings are as they were"));
         }
         if self.gnome {
             for note in given.notes.iter().filter(|note| note.keys.is_empty()) {
-                text += &paint(red, &format!("  {}", note.what));
-                text += "\n";
+                text += &style.error(&note.what);
             }
         }
         text += "\n";
@@ -458,55 +476,62 @@ impl Daemon {
         let keys = self.bindings.iter().map(|b| width(&b.keys)).max().unwrap_or(0);
         let widest = self.bindings.iter().map(|b| width(&b.command)).max().unwrap_or(0);
         // What is in front of a command, and the count that may follow it.
-        let (before, after) = (2 + 1 + 2 + keys + 2, 2 + 6);
+        let (before, after) = (VERB + 1 + keys + 2, 2 + 6);
         let command = if columns > 0 { widest.min(columns.saturating_sub(before + after).max(12)) } else { widest };
         let failed = self.gnome && given.notes.iter().any(|note| note.keys.is_empty());
-        let mut broken = 0;
+        let mut blocked = 0;
         for (binding, runs) in self.bindings.iter().zip(&self.runs) {
             let note = given.notes.iter().find(|note| self.gnome && note.keys == binding.keys);
-            // The mark: working, not working, or not in force.
-            let mark = match note {
-                _ if !working => paint(dim, "–"),
-                Some(note) if note.fix.is_none() && note.what.starts_with("skipped") => paint(yellow, "–"),
-                Some(_) => paint(red, "✗"),
-                None if failed => paint(red, "✗"),
-                None if self.gnome && !given.done => paint(dim, "…"),
-                None => paint(green, "✓"),
+            let (colour, word) = match note {
+                _ if !working => (YELLOW, "Idle"),
+                Some(note) if note.fix.is_some() => (RED, "Blocked"),
+                Some(note) if note.what.starts_with("skipped") => (YELLOW, "Skipped"),
+                Some(_) => (RED, "Failed"),
+                None if failed => (RED, "Failed"),
+                None if self.gnome && !given.done => (CYAN, "Syncing"),
+                None => (GREEN, "Bound"),
             };
             let pressed = if !self.gnome && *runs > 0 { format!("{runs}×") } else { String::new() };
-            let shown = format!("{:command$}", cut(&binding.command, command));
-            let row = format!("  {mark}  {:keys$}  {}  {}", binding.keys, paint(dim, &shown), pressed);
+            let shown = style.dim(&format!("{:command$}", cut(&binding.command, command)));
+            let row = style.line(colour, word, &format!("{:keys$}  {shown}  {pressed}", binding.keys));
             text += row.trim_end();
             text += "\n";
             if let Some(note) = note.filter(|_| working) {
-                broken += usize::from(note.fix.is_some());
-                let colour = if note.fix.is_some() { red } else { yellow };
-                text += &format!("{:before$}{}\n", "", paint(colour, &note.what));
+                blocked += usize::from(note.fix.is_some());
+                text += &style.under(note.what.trim_start_matches("skipped: "));
             }
         }
         if self.bindings.is_empty() {
-            text += &paint(dim, "  nothing bound");
-            text += "\n";
+            text += &style.under(&style.dim("nothing bound"));
         }
-        if broken > 0 {
-            let them = if broken == 1 { "its keys" } else { "their keys" };
-            text += &format!("\n{} not working. {} takes {them} from GNOME.\n", plural(broken, "binding"), paint(bold, "clutch fix"));
+        if blocked > 0 {
+            let them = if blocked == 1 { "its keys" } else { "their keys" };
+            text += "\n";
+            text += &style.warning(&format!("{} blocked; `clutch fix` takes {them} from GNOME", plural(blocked, "binding")));
         }
         text
     }
 
-    /// Take from GNOME the shortcuts that are on our bindings' keys.
-    fn fix(&mut self) -> String {
+    /// Take from GNOME the shortcuts that are on our bindings' keys, as
+    /// they stand now and not as they were last looked at.
+    fn fix(&mut self, style: Style) -> String {
         if !self.gnome {
-            return "nothing to fix: the keys clutch holds are never the desktop's\n".into();
+            return style.line(GREEN, "Nothing", "to fix: the keys clutch holds are never the desktop's");
         }
-        let notes = self.given.lock().unwrap().notes.clone();
-        let said = gnome::fix(&notes);
-        if said.is_empty() {
-            return "nothing to fix\n".into();
-        }
+        let (shortcuts, _) = gnome::shortcuts(&self.bindings);
+        let fixed = gnome::fix(&gnome::blocked(&shortcuts));
         self.give_to_gnome();
-        said.join("\n") + "\n"
+        let mut text = String::new();
+        for (keys, outcome) in &fixed {
+            match outcome {
+                Ok(from) => text += &style.line(GREEN, "Freed", &format!("{keys} from GNOME's {from}")),
+                Err(problem) => text += &style.error(&format!("{keys}: {problem}")),
+            }
+        }
+        if fixed.is_empty() {
+            text += &style.line(GREEN, "Nothing", "to fix: none of GNOME's shortcuts is on a binding's keys");
+        }
+        text
     }
 }
 
