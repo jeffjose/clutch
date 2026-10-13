@@ -115,7 +115,7 @@ pub fn shortcuts(bindings: &[Binding]) -> (Vec<Shortcut>, Vec<Note>) {
         } else if let Some(accelerator) = accelerator(sequence[0]) {
             // GNOME runs a program with its arguments; a binding is a
             // line of shell.
-            let command = format!("sh -c {}", shell_quoted(&binding.command));
+            let command = format!("sh -c {}", shell_quoted(&crate::config::with_clutch(&binding.command)));
             shortcuts.push(Shortcut { keys, accelerator, command });
         } else {
             skipped(&keys, "GNOME cannot bind that key");
@@ -295,7 +295,9 @@ mod tests {
             binding("ctrl+kp5", "xterm"),
         ]);
         assert_eq!(shortcuts.len(), 1);
-        assert_eq!(shortcuts[0].command, r"sh -c 'echo it'\''s'");
+        // In a shell, with the folder clutch is in put on the PATH first.
+        assert!(shortcuts[0].command.starts_with("sh -c 'PATH="));
+        assert!(shortcuts[0].command.ends_with(r"; echo it'\''s'"));
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[0].keys, "super+space t");
         assert!(notes[0].what.contains("sequences"));

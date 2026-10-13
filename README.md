@@ -43,6 +43,38 @@ A key clutch takes is not seen by anything else, so a shortcut of the
 desktop's on the same key does nothing while clutch runs, and works
 again when it does not.
 
+## The box
+
+![The box, listing things to do](docs/palette.png)
+
+```toml
+"alt+space" = "clutch palette"
+```
+
+Type, and the windows and applications that match are listed; Enter
+goes to the one picked out. With nothing typed it lists the windows, the
+one used before this one first, so the key and Enter go back to it. The
+first letter says what is looked for:
+
+| | |
+|---|---|
+| `>` | things to do: move the window in front to the next monitor, maximize or close it, send it to a workspace; run a binding; pause clutch |
+| `@` | windows only |
+| `#` | workspaces |
+| `!` | a line of shell |
+
+Two more for keys of their own:
+
+```sh
+clutch raise firefox       # go to Firefox's window, or start it
+clutch move-monitor        # the window in front, to the next monitor
+```
+
+None of these needs clutch running: they are programs that start, do
+their one thing and are gone, so a shortcut of the desktop's can run
+them as well. Windows can be seen and moved on X11; on Wayland the box
+has the applications, the bindings and the shell.
+
 ## Without sudo
 
 Where the rule cannot be put in, clutch cannot hold the keyboards. On

@@ -577,7 +577,7 @@ fn launch(binding: &Binding, under_systemd: bool) {
     let text = binding.command.clone();
     thread::spawn(move || {
         let mut command = Command::new("/bin/sh");
-        command.arg("-c").arg(&text).stdin(Stdio::null()).process_group(0);
+        command.arg("-c").arg(config::with_clutch(&text)).stdin(Stdio::null()).process_group(0);
         if let Some(home) = env::var_os("HOME") {
             command.current_dir(home);
         }

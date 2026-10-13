@@ -59,6 +59,17 @@ pub fn config_home() -> PathBuf {
     }
 }
 
+/// A line of shell, with clutch itself where the line can find it. What
+/// starts a binding, the desktop or systemd, may not look where clutch
+/// was installed, and a binding may well run `clutch palette`.
+pub fn with_clutch(line: &str) -> String {
+    let dir = env::current_exe().ok().and_then(|exe| Some(exe.parent()?.to_string_lossy().into_owned()));
+    match dir {
+        Some(dir) => format!("PATH='{}':\"$PATH\"; {line}", dir.replace('\'', "'\\''")),
+        None => line.to_string(),
+    }
+}
+
 /// A path as it is typed, with ~ for home.
 pub fn short(path: &Path) -> String {
     match path.strip_prefix(home()) {

@@ -19,5 +19,8 @@
 #   on GNOME, with the ddterm extension:
 # "ctrl+space" = "gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/ddterm --method com.github.amezin.ddterm.Extension.Toggle"
 
+# The box that finds windows and applications:
+# "alt+space" = "clutch palette"
+
 # A sequence:
 # "super+space t" = "xterm"
