@@ -661,9 +661,10 @@ impl Palette {
         match key {
             Key::Named(NamedKey::Escape) => return event_loop.exit(),
             Key::Named(NamedKey::Enter) => return self.go(self.selected, event_loop),
-            // A project's letter with Alt, which is still down from the
-            // key that opened the box, goes straight to it.
-            Key::Character(letter) if self.modifiers.alt_key() && !ctrl => {
+            // A project's letter with Alt goes straight to it; or with
+            // Super, which may still be down from the key that opened
+            // the box, where the desktop has no use of its own for the two.
+            Key::Character(letter) if (self.modifiers.alt_key() || self.modifiers.super_key()) && !ctrl => {
                 let letter = letter.to_lowercase().chars().next();
                 let of_it = |item: &Item| item.project.as_ref().is_some_and(|project| Some(project.letter) == letter);
                 if let Some(at) = self.found.iter().position(of_it) {

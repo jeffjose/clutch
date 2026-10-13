@@ -48,7 +48,7 @@ again when it does not.
 ![The box, listing things to do](docs/palette.png)
 
 ```toml
-"alt+space" = "clutch palette"
+"super+k" = "clutch palette"
 ```
 
 Type, and the windows and applications that match are listed; Enter
@@ -68,8 +68,7 @@ projects are tiles: a letter, the name, how its git stands, and what it
 is written in. None of it is set anywhere: the project is in the
 window's title, the letter is the first free one in its name, and
 `Cargo.toml` or `package.json` says the rest. Alt and the letter goes
-straight to it, so with Alt still down from opening the box, clutch is
-`Alt+Space`, `C`.
+straight to it: clutch is `Super+K`, `Alt+C`.
 
 Two more for keys of their own:
 

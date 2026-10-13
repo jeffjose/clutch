@@ -19,8 +19,10 @@
 #   on GNOME, with the ddterm extension:
 # "ctrl+space" = "gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/ddterm --method com.github.amezin.ddterm.Extension.Toggle"
 
-# The box that finds windows and applications:
-# "alt+space" = "clutch palette"
+# The box that finds windows, projects and applications. Super is the
+# key some call Cmd or Win. Ctrl+K works too, but it is taken from every
+# program then: the shell's kill-line, and the start of many of VS Code's keys.
+# "super+k" = "clutch palette"
 
 # A sequence:
 # "super+space t" = "xterm"
