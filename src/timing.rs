@@ -54,10 +54,11 @@ fn path() -> PathBuf {
     crate::config::state_home().join("clutch/timings.jsonl")
 }
 
-/// The box is on the screen: keep what it took, once.
-pub fn finish() {
-    let Ok(mut marks) = MARKS.lock() else { return };
-    let Some(marks) = marks.as_mut().filter(|marks| !marks.done) else { return };
+/// The box is on the screen: keep what it took, once. Returns it, for the
+/// box to show: how long in all, and the line that was kept.
+pub fn finish() -> Option<(f64, String)> {
+    let Ok(mut marks) = MARKS.lock() else { return None };
+    let marks = marks.as_mut().filter(|marks| !marks.done)?;
     marks.done = true;
     let ms = |from: Instant, to: Instant| (to - from).as_secs_f64() * 1000.0;
     let mut steps = Vec::new();
@@ -84,7 +85,9 @@ pub fn finish() {
         let _ = file.write_all(line.as_bytes());
     }
     // A ring: once it is half as long again as it keeps, the oldest go.
-    if let Ok(text) = fs::read_to_string(&path) {
+    // (Read only when it may be: a line is some 300 bytes.)
+    let long = fs::metadata(&path).map_or(0, |file| file.len()) > (KEPT * 3 / 2 * 200) as u64;
+    if let Some(text) = long.then(|| fs::read_to_string(&path).ok()).flatten() {
         let lines: Vec<&str> = text.lines().collect();
         if lines.len() > KEPT * 3 / 2 {
             let kept = lines[lines.len() - KEPT..].join("\n") + "\n";
@@ -94,6 +97,7 @@ pub fn finish() {
             }
         }
     }
+    Some((total + waited.unwrap_or(0.0), line.trim_end().to_string()))
 }
 
 /// One opening, as kept.
@@ -171,7 +175,7 @@ pub fn show(count: Option<usize>) -> Result<(), String> {
             continue;
         }
         times.sort_by(f64::total_cmp);
-        println!("  {name:<24} {:>8.1} {:>8.1}", times[times.len() / 2], times[times.len() - 1]);
+        println!("  {name:<24} {:>8.1} {:>8.1}", times[(times.len() - 1) / 2], times[times.len() - 1]);
     }
     Ok(())
 }

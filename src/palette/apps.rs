@@ -7,6 +7,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct App {
     pub name: String,
     /// What kind of thing it is: "Web Browser".
@@ -80,7 +81,44 @@ fn command(exec: &str) -> String {
 
 /// Every application, by name. One of your own stands in for the
 /// system's of the same file name.
+///
+/// Reading every .desktop file takes a while when they are not in memory
+/// (50ms, the first time in a while), so what was read is kept, in one
+/// file, and that is what is given: it is read again, in the background,
+/// for next time, and at once where a folder of them has changed since.
 pub fn all() -> Vec<App> {
+    let folders = || -> Vec<(String, u64)> {
+        let changed = |dir: &PathBuf| fs::metadata(dir).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|since| since.as_secs());
+        data_dirs().iter().map(|dir| dir.join("applications")).map(|dir| (dir.to_string_lossy().into_owned(), changed(&dir).unwrap_or(0))).collect()
+    };
+    let kept = || -> PathBuf {
+        let home = PathBuf::from(env::var_os("HOME").unwrap_or_default());
+        env::var_os("XDG_CACHE_HOME").map_or(home.join(".cache"), PathBuf::from).join("clutch/applications.json")
+    };
+    let keep = move |apps: &Vec<App>| {
+        let text = serde_json::to_string(&(folders(), apps)).unwrap_or_default();
+        let path = kept();
+        let _ = fs::create_dir_all(path.parent().unwrap_or(&path));
+        let fresh = path.with_extension("json.new");
+        if fs::write(&fresh, text).is_ok() {
+            let _ = fs::rename(fresh, path);
+        }
+    };
+    let cached = fs::read_to_string(kept()).ok().and_then(|text| serde_json::from_str::<(Vec<(String, u64)>, Vec<App>)>(&text).ok());
+    match cached {
+        Some((then, apps)) if then == folders() => {
+            std::thread::spawn(move || keep(&scan()));
+            apps
+        }
+        _ => {
+            let apps = scan();
+            keep(&apps);
+            apps
+        }
+    }
+}
+
+fn scan() -> Vec<App> {
     let mut seen = HashSet::new();
     let mut apps = Vec::new();
     for dir in data_dirs() {

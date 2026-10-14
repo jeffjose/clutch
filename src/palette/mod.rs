@@ -177,6 +177,8 @@ enum Hit {
     Volume(u32),
     /// A widget's tile, by its place among them.
     Widget(usize),
+    /// The time this opening took, at the foot: a click copies it.
+    Took,
 }
 
 /// A measure drawn on a row: how strong a network is, out of 100, or how
@@ -927,6 +929,9 @@ struct Palette {
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
     /// The controls that are tiles, here.
     shown: Vec<usize>,
+    /// How long this opening took, from the key to the first frame, and
+    /// the line kept of it: shown at the foot, to be copied.
+    took: Option<(f64, String)>,
     /// The widgets in the settings, and what each last showed, if anything.
     widgets: Vec<(crate::widgets::Widget, Option<crate::widgets::Tile>)>,
     /// What git said of each project's folder, once asked: its last commit and what has changed.
@@ -1190,6 +1195,28 @@ impl Palette {
             self.controls.act(Deed::Level(device, to));
             self.heard();
         }
+    }
+
+    /// How long this opening took, as the foot says it: "70 ms", or
+    /// "copied" once it has been.
+    fn took_said(&self) -> String {
+        match &self.took {
+            Some((_, line)) if line.is_empty() => "copied".to_string(),
+            Some((ms, _)) => format!("{ms:.0} ms"),
+            None => String::new(),
+        }
+    }
+
+    /// Where it is, in the foot's far right corner.
+    fn took_area(&mut self) -> Option<(i32, i32, i32, i32)> {
+        self.took.as_ref()?;
+        let Layout { px, pad, foot, .. } = self.layout;
+        let small = px * 5 / 6;
+        let said = self.took_said();
+        let wide = pad / 3 + self.text.width(&said, small) + pad / 4 + self.text.width(glyph::WINDOW, small) + pad / 3;
+        let tall = Text::line_height(small) + pad / 3;
+        let full = self.layout.full();
+        Some((full - pad / 2 - wide, self.layout.height() - foot + (foot - tall) / 2, wide, tall))
     }
 
     /// Whether what was copied is being looked through, when the side
@@ -1466,6 +1493,9 @@ impl Palette {
         if self.back_area().is_some_and(within) {
             return Some(Hit::Back);
         }
+        if self.took_area().is_some_and(within) {
+            return Some(Hit::Took);
+        }
         if self.view == View::Look && x < width {
             return self.editor_hit(x, y);
         }
@@ -1539,6 +1569,13 @@ impl Palette {
         }
         match self.hover {
             Some(Hit::Back) => self.back(),
+            // The whole of what was kept of this opening, to be pasted somewhere.
+            Some(Hit::Took) => {
+                if let Some((ms, line)) = self.took.take() {
+                    crate::clip::copy_text(&line);
+                    self.took = Some((ms, String::new()));
+                }
+            }
             Some(Hit::Mute) => self.controls.act(Deed::Flip(controls::SOUND)),
             // A widget runs what its settings say a click on it should, and the box goes.
             Some(Hit::Widget(at)) => {
@@ -2075,6 +2112,16 @@ impl Palette {
         // At the right: what Enter does, and the way to the rest of what can be done.
         let text_top = foot_top + (self.layout.foot - Text::line_height(small)) / 2;
         let caps_top = foot_top + (self.layout.foot - line * 4 / 5) / 2;
+        // In the far corner, how long this opening took; a click copies it all.
+        if let Some((x, y, wide, tall)) = self.took_area() {
+            if self.hover == Some(Hit::Took) {
+                canvas.round_fill(x, y, wide, tall, tall / 2, WELL_COLOR, 256);
+            }
+            let said = self.took_said();
+            self.text.draw(&mut canvas, x + pad / 3, text_top, small, DIM_TEXT_COLOR, &said);
+            let icon_left = x + pad / 3 + self.text.width(&said, small) + pad / 4;
+            self.text.draw(&mut canvas, icon_left, text_top, small, DIM_TEXT_COLOR, glyph::WINDOW);
+        }
         let mut right = width - pad;
         if self.view != View::Look && !self.found.is_empty() {
             let from = self.keys_at(&mut canvas, right, caps_top, "Ctrl+K", false);
@@ -2329,7 +2376,13 @@ impl ApplicationHandler for Palette {
                 self.redraw();
                 // The first frame is on the screen: what it took is kept.
                 crate::timing::mark("first frame");
-                crate::timing::finish();
+                if let Some(took) = crate::timing::finish() {
+                    // Said at the foot, drawn again to show it.
+                    self.took = Some(took);
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                }
                 // A font for letters ours lacks is on its way: draw again
                 // when it should be in.
                 if self.text.waiting() {
@@ -2482,6 +2535,7 @@ impl Palette {
             git: Default::default(),
             shown: controls::shown(),
             widgets: Vec::new(),
+            took: None,
         };
         // The widgets, as they last were: what the running clutch keeps.
         {
@@ -2614,6 +2668,7 @@ mod tests {
             copies: Vec::new(),
             links: vec![("gh".into(), "https://github.com/search?q={}".into())],
             editor_icon: None,
+            widgets: Vec::new(),
             recent: None,
         }
     }
