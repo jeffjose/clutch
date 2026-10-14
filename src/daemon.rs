@@ -132,10 +132,11 @@ pub fn run(options: Options) -> ! {
     let mut looked = None::<Instant>;
     let mut asked = None::<Instant>;
     loop {
-        if let Some(newer) = program.as_ref().and_then(installed).filter(|now| Some(*now) != written) {
-            let _ = newer;
+        // Taken away, too: mise drops a build of your own once it has built
+        // the commit that was pushed. systemd finds the copy that is left.
+        if program.is_some() && program.as_ref().and_then(installed) != written {
             // systemd starts the new one in its place.
-            fail("a newer clutch was installed: making way for it");
+            fail("a newer clutch was installed, or this one removed: making way");
         }
         // The seat is ours while we may write to uinput: with the udev
         // rule that is while we are logged in at the machine itself.

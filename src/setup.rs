@@ -99,7 +99,7 @@ pub fn setup() -> Result<(), String> {
         print!("{}", style.line(GREEN, "Created", &format!("{} (Alt+K opens the box)", config::short(&settings))));
     }
 
-    write(&unit_path(), &UNIT.replace("@EXE@", &exe.to_string_lossy()))?;
+    write(&unit_path(), UNIT)?;
     systemctl(&["daemon-reload"])?;
     systemctl(&["enable", "--quiet", "clutch.service"])?;
     systemctl(&["restart", "clutch.service"])?;

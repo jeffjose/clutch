@@ -3,7 +3,13 @@ Description=clutch, the keys that are yours before any program's
 
 [Service]
 Type=notify
-ExecStart=@EXE@ run
+# clutch is found as your shell would find it, not at the one path it was
+# set up from: a build of your own in ~/.cargo/bin first, then mise's or
+# the system's. A tool manager may take any one copy away. (ExecStart must
+# itself be a path, so it is env that does the finding.) What the keys run
+# is looked for in the same places.
+Environment=PATH=%h/.cargo/bin:%h/.local/share/mise/shims:%h/.local/bin:%h/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+ExecStart=/usr/bin/env clutch run
 Restart=on-failure
 RestartSec=1
 # A clutch that stops answering is killed, which gives the keyboards back.
