@@ -37,9 +37,13 @@ pub const KEYS: [char; COUNT] = ['w', 's', 'm', 'b', 'q', 'l', 'p', 'n', ' '];
 /// Whether this is a laptop: it has a battery of its own, and not only a
 /// mouse's or a keyboard's, which say they are a device's.
 pub fn laptop() -> bool {
-    let read = |path: std::path::PathBuf| std::fs::read_to_string(path).unwrap_or_default().trim().to_string();
-    std::fs::read_dir("/sys/class/power_supply").into_iter().flatten().flatten().any(|supply| {
-        read(supply.path().join("type")) == "Battery" && read(supply.path().join("scope")) != "Device"
+    // Asked of /sys once: it is asked for each control's key, and a laptop stays one.
+    static LAPTOP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LAPTOP.get_or_init(|| {
+        let read = |path: std::path::PathBuf| std::fs::read_to_string(path).unwrap_or_default().trim().to_string();
+        std::fs::read_dir("/sys/class/power_supply").into_iter().flatten().flatten().any(|supply| {
+            read(supply.path().join("type")) == "Battery" && read(supply.path().join("scope")) != "Device"
+        })
     })
 }
 

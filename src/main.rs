@@ -9,6 +9,7 @@ mod keys;
 mod palette;
 mod setup;
 mod style;
+mod timing;
 mod widgets;
 
 use std::io::{Read, Write};
@@ -35,6 +36,8 @@ These need no clutch running; any key bound anywhere can start them.
   clutch resume
   clutch reload    read the settings again (it does when they are saved, too)
   clutch check     read the settings and say what is wrong with them
+  clutch timings   how long the box took to come up, lately and at its slowest
+      N            the last N as they are kept, to copy
   clutch remove    take clutch off this machine
   clutch run       what the service runs: hold the keyboards, here, until stopped
       --config FILE   settings other than ~/.config/clutch/config.toml
@@ -168,6 +171,7 @@ fn main() {
         "move-monitor" => move_monitor(arguments.next().as_deref()),
         "raise" => raise(arguments.collect()),
         "status" | "pause" | "resume" | "reload" | "fix" => tell(&command),
+        "timings" | "telemetry" => timing::show(arguments.next().and_then(|count| count.parse().ok())),
         "" | "help" | "-h" | "--help" => {
             print!("{HELP}");
             Ok(())

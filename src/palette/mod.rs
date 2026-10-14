@@ -285,6 +285,8 @@ struct Stock {
     copies: Vec<Item>,
     /// Words that open a web address, and the address.
     links: Vec<(String, String)>,
+    /// The widgets in the settings.
+    widgets: Vec<crate::widgets::Widget>,
     /// The icon of the editor projects open in.
     editor_icon: Option<String>,
     /// The window used before the one in front: where Enter alone goes.
@@ -298,8 +300,10 @@ impl Stock {
         let mut folders = Vec::new();
         let active = desk.and_then(Desk::active);
         let settings = fs::read_to_string(config::path()).unwrap_or_default();
-        let (bindings, links) = Config::parse(&settings).map_or((Vec::new(), Vec::new()), |(settings, _)| (settings.bindings, settings.links));
-        stock.links = links;
+        // (Read once: the widgets are the box's too.)
+        let (bindings, links, widgets) = Config::parse(&settings).map_or_else(|_| Default::default(), |(settings, _)| (settings.bindings, settings.links, settings.widgets));
+        (stock.links, stock.widgets) = (links, widgets);
+        crate::timing::mark("settings");
         // A letter that is bound with Alt or Super, as the key that opens
         // the box may be, is clutch's before it is the box's: no project
         // can be gone to by it.
@@ -314,6 +318,7 @@ impl Stock {
         // The windows of projects that are open, by what their windows are called.
         let mut open: Vec<String> = Vec::new();
         let apps = apps::all();
+        crate::timing::mark("applications");
 
         if let Some(desk) = desk {
             let (names, current) = desk.workspaces();
@@ -338,6 +343,7 @@ impl Stock {
                 stock.windows.push(item);
             }
             stock.recent = windows.first().map(|window| window.id);
+            crate::timing::mark("windows");
             for (at, name) in names.iter().enumerate() {
                 let hint = if at as u32 == current { "here" } else { "" };
                 stock.workspaces.push(Item::new(glyph::WORKSPACE, name, "", hint, Action::Workspace(at as u32)));
@@ -400,6 +406,7 @@ impl Stock {
             stock.shelved.push(item);
         }
 
+        crate::timing::mark("project folders");
         // What the folders say of the projects, and a letter for each.
         let mut found: Vec<&mut Project> = stock.windows.iter_mut().chain(stock.closed.iter_mut()).filter_map(|item| item.project.as_mut()).collect();
         let mut looked: Vec<Project> = found.iter().map(|project| (**project).clone()).collect();
@@ -439,6 +446,7 @@ impl Stock {
             stock.commands.push(Item::new(glyph::KEYBOARD, &binding.command, "", &binding.keys, Action::Shell(binding.command.clone())));
         }
 
+        crate::timing::mark("projects and git");
         // What has been copied: its first line, and how long ago.
         let now = timers::now();
         for (number, copy) in crate::clip::history().into_iter().enumerate() {
@@ -450,7 +458,8 @@ impl Stock {
             };
             let mut item = match &copy.text {
                 // An emoji copied is said by its name and shown as its picture: the font the box is set in has none.
-                Some(text) if emoji::all().iter().any(|emoji| emoji.text == text.trim()) => {
+                // (Only what could be one is looked up: the emoji, and their font, are not read for every copy.)
+                Some(text) if text.trim().len() <= 8 && !text.trim().is_ascii() && emoji::all().iter().any(|emoji| emoji.text == text.trim()) => {
                     let name = emoji::all().iter().find(|emoji| emoji.text == text.trim()).map_or(String::new(), |emoji| emoji.name.clone());
                     let mut item = Item::new(glyph::CLIPBOARD, &name, &format!("emoji \u{b7} {ago}"), "", Action::Restore(copy.path.clone()));
                     item.picture = Picture::Emoji(text.trim().to_string());
@@ -507,6 +516,7 @@ impl Stock {
             stock.controls.push(item);
         }
         stock.commands.extend(sends);
+        crate::timing::mark("clipboard and commands");
         stock
     }
 
@@ -2294,6 +2304,7 @@ impl ApplicationHandler for Palette {
             attributes = attributes.with_position(PhysicalPosition::new(x, y));
         }
         let Ok(window) = event_loop.create_window(attributes) else { return event_loop.exit() };
+        crate::timing::mark("window");
         // On X11 the window itself is cut to the shape, which needs
         // nothing of the desktop: not all of them can see through one.
         let x11 = match window.window_handle().map(|handle| handle.as_raw()) {
@@ -2316,6 +2327,9 @@ impl ApplicationHandler for Palette {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => {
                 self.redraw();
+                // The first frame is on the screen: what it took is kept.
+                crate::timing::mark("first frame");
+                crate::timing::finish();
                 // A font for letters ours lacks is on its way: draw again
                 // when it should be in.
                 if self.text.waiting() {
@@ -2421,6 +2435,7 @@ impl Palette {
     /// The box with `typed` already in it, not yet on the screen.
     fn new(typed: &str) -> Palette {
         let desk = Desk::open();
+        crate::timing::mark("desktop");
         // Why not, to be said where the windows would have been listed.
         let no_desk = match (&desk, env::var_os("WAYLAND_DISPLAY")) {
             (Some(_), _) => String::new(),
@@ -2469,12 +2484,13 @@ impl Palette {
             widgets: Vec::new(),
         };
         // The widgets, as they last were: what the running clutch keeps.
-        let settings = fs::read_to_string(config::path()).unwrap_or_default();
-        if let Ok((settings, _)) = Config::parse(&settings) {
-            palette.widgets = settings.widgets.into_iter().map(|widget| {
+        {
+            let widgets = std::mem::take(&mut palette.stock.widgets);
+            palette.widgets = widgets.into_iter().map(|widget| {
                 let tile = crate::widgets::last(&widget).map(|(printed, _)| crate::widgets::tile(&widget, &printed));
                 (widget, tile)
             }).collect();
+            crate::timing::mark("widgets");
         }
         palette.typed_changed();
         palette
@@ -2487,6 +2503,7 @@ impl Palette {
 /// Asked for while it is already up, it is taken down instead: the key
 /// that opens the box also closes it.
 pub fn run(typed: &str) -> Result<(), String> {
+    crate::timing::begin();
     // The box that is up listens here, and goes when anything calls.
     let door = config::socket().with_file_name("clutch-palette.sock");
     if UnixStream::connect(&door).is_ok() {
@@ -2502,6 +2519,7 @@ pub fn run(typed: &str) -> Result<(), String> {
         });
     }
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
+    crate::timing::mark("event loop");
     let mut palette = Palette::new(typed);
     // The box is up before the controls have answered, and is woken as
     // each does.
@@ -2525,6 +2543,7 @@ pub fn run(typed: &str) -> Result<(), String> {
     palette.controls.start(move || {
         let _ = proxy.send_event(());
     });
+    crate::timing::mark("controls asked");
     let run = event_loop.run_app(&mut palette).map_err(|e| e.to_string());
     let _ = fs::remove_file(&door);
     run

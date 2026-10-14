@@ -632,9 +632,11 @@ fn keyboard_of_our_own() -> Option<VirtualDevice> {
 fn launch(binding: &Binding, under_systemd: bool) {
     let keys = binding.keys.clone();
     let text = binding.command.clone();
+    // When the key was pressed, for the box to say how long it took to come.
+    let pressed = crate::timing::pressed_now();
     thread::spawn(move || {
         let mut command = Command::new("/bin/sh");
-        command.arg("-c").arg(config::with_clutch(&text)).stdin(Stdio::null()).process_group(0);
+        command.arg("-c").arg(config::with_clutch(&text)).stdin(Stdio::null()).process_group(0).env("CLUTCH_PRESSED", pressed);
         if let Some(home) = env::var_os("HOME") {
             command.current_dir(home);
         }
