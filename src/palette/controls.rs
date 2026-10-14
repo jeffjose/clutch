@@ -66,7 +66,7 @@ pub fn key_of(at: usize) -> Option<char> {
 }
 
 /// How one of them stands.
-#[derive(Clone, Default, PartialEq, Debug)]
+#[derive(Clone, Default, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Tile {
     /// In a few words: "HomeNet · strong".
     pub what: String,
@@ -101,7 +101,7 @@ pub struct Network {
 }
 
 /// Something sound plays through, or is listened with.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Device {
     /// What pactl knows it by.
     pub name: String,
@@ -115,7 +115,7 @@ pub struct Device {
 }
 
 /// A program that is playing something, or has it paused.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Player {
     /// What it is known by on the session's bus.
     pub name: String,
@@ -124,6 +124,23 @@ pub struct Player {
     pub title: String,
     pub artist: String,
     pub playing: bool,
+}
+
+/// How they stood when last asked, kept between one opening of the box and the next.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Remembered {
+    tiles: Vec<Tile>,
+    devices: Vec<Device>,
+    players: Vec<Player>,
+}
+
+fn remembered() -> std::path::PathBuf {
+    let home = std::path::PathBuf::from(env::var_os("HOME").unwrap_or_default());
+    env::var_os("XDG_CACHE_HOME").map_or(home.join(".cache"), std::path::PathBuf::from).join("clutch/controls.json")
+}
+
+fn fs_read(path: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(path).ok()
 }
 
 /// Something done to one of them.
@@ -169,7 +186,29 @@ impl Controls {
     pub fn new() -> Controls {
         let (sender, reports) = mpsc::channel();
         let (networks, devices, players) = (Vec::new(), Vec::new(), Vec::new());
-        Controls { tiles: Default::default(), networks, devices, players, said: String::new(), reports, sender, deeds: None }
+        let mut controls = Controls { tiles: Default::default(), networks, devices, players, said: String::new(), reports, sender, deeds: None };
+        // How each stood last time: drawn at once, in its colors, until it
+        // says how it stands now. Not taken as known: nothing is flipped on it.
+        if let Some(last) = fs_read(&remembered()).and_then(|text| serde_json::from_str::<Remembered>(&text).ok()) {
+            for (tile, was) in controls.tiles.iter_mut().zip(last.tiles) {
+                *tile = Tile { known: false, ..was };
+            }
+            (controls.devices, controls.players) = (last.devices, last.players);
+        }
+        controls
+    }
+
+    /// Keep how they stand now, for the next time the box opens.
+    fn remember(&self) {
+        let last = Remembered { tiles: self.tiles.to_vec(), devices: self.devices.clone(), players: self.players.clone() };
+        if let Ok(text) = serde_json::to_string(&last) {
+            let path = remembered();
+            let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
+            let fresh = path.with_extension("json.new");
+            if std::fs::write(&fresh, text).is_ok() {
+                let _ = std::fs::rename(fresh, path);
+            }
+        }
     }
 
     /// Ask how everything stands. `wake` is called, from another thread,
@@ -247,8 +286,9 @@ impl Controls {
                 self.tiles[PREVIOUS] = player.map_or(Tile::absent(), |player| Tile::of(player.called.clone(), false));
                 (self.tiles[SOUND], self.tiles[MIC], self.devices, self.players) = (sound, mic, devices, players);
             }
-            Report::Said(said) => self.said = said,
+            Report::Said(said) => return self.said = said,
         }
+        self.remember();
     }
 
     /// Do it as soon as what it is of has said how it stands: asked for as
