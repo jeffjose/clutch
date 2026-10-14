@@ -11,7 +11,8 @@ use std::collections::HashMap;
 use std::env;
 use x11rb::connection::Connection;
 use x11rb::protocol::randr::ConnectionExt as _;
-use x11rb::protocol::xproto::{AtomEnum, ClientMessageEvent, ConnectionExt, EventMask};
+use x11rb::protocol::shape::{ConnectionExt as _, SK, SO};
+use x11rb::protocol::xproto::{AtomEnum, ClientMessageEvent, ClipOrdering, ConnectionExt, EventMask, Rectangle};
 use x11rb::rust_connection::RustConnection;
 use x11rb::CURRENT_TIME;
 
@@ -62,6 +63,14 @@ impl Desk {
         match self {
             Desk::X11(desk) => desk.icon(window, size),
             Desk::Gnome(_) => None,
+        }
+    }
+
+    /// Cut a window of ours to a rectangle with rounded corners, where
+    /// the desktop lets a window be cut. On Wayland it is drawn so.
+    pub fn round(&self, window: u32, width: i32, height: i32, radius: i32) {
+        if let Desk::X11(desk) = self {
+            desk.round(window, width, height, radius);
         }
     }
 
@@ -246,6 +255,23 @@ impl X11 {
     /// The window that has the keyboard.
     pub fn active(&self) -> Option<u32> {
         self.numbers(self.root, "_NET_ACTIVE_WINDOW", 1).first().copied().filter(|id| *id != 0)
+    }
+
+    /// Cut a window to a rectangle with rounded corners: a strip for
+    /// each row of the curves, and one piece for all between.
+    fn round(&self, window: u32, width: i32, height: i32, radius: i32) {
+        let radius = radius.clamp(0, width.min(height) / 2);
+        let strip = |x: i32, y: i32, w: i32, h: i32| Rectangle { x: x as i16, y: y as i16, width: w as u16, height: h as u16 };
+        let mut shape = vec![strip(0, radius, width, height - 2 * radius)];
+        for row in 0..radius {
+            // How far the curve cuts into this row.
+            let from_middle = f64::from(radius) - f64::from(row) - 0.5;
+            let inset = (f64::from(radius) - (f64::from(radius * radius) - from_middle * from_middle).max(0.0).sqrt()).round() as i32;
+            shape.push(strip(inset, row, width - 2 * inset, 1));
+            shape.push(strip(inset, height - 1 - row, width - 2 * inset, 1));
+        }
+        let _ = self.conn.shape_rectangles(SO::SET, SK::BOUNDING, ClipOrdering::UNSORTED, window, 0, 0, &shape);
+        let _ = self.conn.flush();
     }
 
     /// The windows a taskbar would show, the one used last first.

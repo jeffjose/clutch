@@ -31,6 +31,7 @@ use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::platform::wayland::WindowAttributesExtWayland;
 use winit::platform::x11::{WindowAttributesExtX11, WindowType};
 use winit::window::{Window, WindowId, WindowLevel};
@@ -377,6 +378,11 @@ impl Layout {
         self.head + ROWS as i32 * self.row + self.pad / 2 + self.foot
     }
 
+    /// How round the box's corners are.
+    fn corner(&self) -> i32 {
+        self.pad * 2 / 3
+    }
+
     /// How tall a project's tile is: a large letter, the name, and two
     /// small lines under it.
     fn tile(&self) -> i32 {
@@ -504,8 +510,11 @@ impl Palette {
         let mut canvas = Canvas::new(pixels, width, height);
         let Layout { px, pad, line, head, row, .. } = self.layout;
         let (width, height) = (canvas.width, canvas.height);
-        canvas.fill(0, 0, width, height, EDGE_COLOR);
-        canvas.fill(1, 1, width - 2, height - 2, PANEL_COLOR);
+        // A panel with rounded corners and a thin edge, on nothing.
+        let corner = self.layout.corner();
+        canvas.fill(0, 0, width, height, 0);
+        canvas.round_fill(0, 0, width, height, corner, EDGE_COLOR, 256);
+        canvas.round_fill(1, 1, width - 2, height - 2, corner - 1, PANEL_COLOR, 256);
 
         // What is being looked for, and what has been typed.
         let typed = self.field.string();
@@ -639,6 +648,7 @@ impl Palette {
             self.text.draw(&mut canvas, at, text_top, small, DIM_TEXT_COLOR, what);
             at += self.text.width(what, small) + pad * 3 / 2;
         }
+        canvas.round_window(corner);
     }
 
     fn redraw(&mut self) {
@@ -680,6 +690,12 @@ impl Palette {
             Key::Named(NamedKey::Tab) => self.step(1),
             Key::Character("n") if ctrl => self.step(1),
             Key::Character("p") if ctrl => self.step(-1),
+            // The keys under the fingers, with Ctrl since plain they are
+            // letters to type: J and K down and up, H and L across.
+            Key::Character("j") if ctrl => self.step_down(true),
+            Key::Character("k") if ctrl => self.step_down(false),
+            Key::Character("l") if ctrl && among_tiles => self.select((self.selected + 1).min(self.tiles - 1)),
+            Key::Character("h") if ctrl && among_tiles => self.select(self.selected.saturating_sub(1)),
             Key::Named(NamedKey::PageDown) => self.select(self.selected + ROWS),
             Key::Named(NamedKey::PageUp) => self.select(self.selected.saturating_sub(ROWS)),
             key => {
@@ -717,11 +733,23 @@ impl ApplicationHandler for Palette {
             .with_decorations(false)
             .with_resizable(false)
             .with_window_level(WindowLevel::AlwaysOnTop)
+            // On Wayland the corners are rounded by leaving them clear.
+            .with_transparent(env::var_os("WAYLAND_DISPLAY").is_some())
             .with_inner_size(size);
         if let Some((x, y)) = self.place {
             attributes = attributes.with_position(PhysicalPosition::new(x, y));
         }
         let Ok(window) = event_loop.create_window(attributes) else { return event_loop.exit() };
+        // On X11 the window itself is cut to the shape, which needs
+        // nothing of the desktop: not all of them can see through one.
+        let x11 = match window.window_handle().map(|handle| handle.as_raw()) {
+            Ok(RawWindowHandle::Xlib(handle)) => Some(handle.window as u32),
+            Ok(RawWindowHandle::Xcb(handle)) => Some(handle.window.get()),
+            _ => None,
+        };
+        if let (Some(id), Some(desk)) = (x11, &self.desk) {
+            desk.round(id, size.width as i32, size.height as i32, self.layout.corner());
+        }
         let window = Arc::new(window);
         let surface = Context::new(window.clone()).and_then(|context| Surface::new(&context, window.clone()));
         let Ok(surface) = surface else { return event_loop.exit() };

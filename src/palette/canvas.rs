@@ -56,6 +56,25 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Makes what is drawn a window with rounded corners, where the
+    /// window's pixels can be seen through: every pixel solid, but those
+    /// outside the curve of a corner clear, and those on it part-way.
+    /// The panel must have been drawn rounded on a ground of nothing, so
+    /// that the colours along the curve are already thinned to match.
+    pub fn round_window(&mut self, radius: i32) {
+        self.pixels.iter_mut().for_each(|pixel| *pixel |= 0xFF00_0000);
+        let (width, height) = (self.width, self.height);
+        for (corner_x, corner_y) in [(0, 0), (width - radius, 0), (0, height - radius), (width - radius, height - radius)] {
+            for y in corner_y.max(0)..(corner_y + radius).min(height) {
+                for x in corner_x.max(0)..(corner_x + radius).min(width) {
+                    let solid = (rounded_cover(x, y, 0, 0, width, height, radius, 0.0) * 255.0).round() as u32;
+                    let pixel = &mut self.pixels[(y * width + x) as usize];
+                    *pixel = if solid == 0 { 0 } else { *pixel & 0x00FF_FFFF | solid << 24 };
+                }
+            }
+        }
+    }
+
     fn cover(&mut self, x: i32, y: i32, color: u32, amount: u32) {
         if amount > 0 && x >= 0 && y >= 0 && x < self.width && y < self.height {
             let pixel = &mut self.pixels[(y * self.width + x) as usize];
