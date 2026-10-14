@@ -1,10 +1,10 @@
 # clutch
 
-Keys that are yours before any program's. clutch holds the keyboards,
-reads every key, and passes on all but the ones you have bound, which
-run a command instead. It sits below the desktop, so the same settings
-work on X11, on Wayland and on the console, whatever the desktop's own
-shortcuts say.
+Global key bindings that take priority over every program. clutch grabs
+the keyboards, reads every key, and passes all of them through except
+the ones you have bound, which run a command instead. It works below the
+desktop, so the same settings apply on X11, on Wayland and on the
+console, regardless of the desktop's own shortcuts.
 
 ```toml
 [bind]
@@ -20,28 +20,28 @@ cargo install --git https://github.com/jeffjose/clutch
 clutch setup
 ```
 
-`clutch setup` asks for sudo once, to put in a udev rule that lets
-whoever is logged in at the machine read its keyboards. Then it writes
-`~/.config/clutch/config.toml`, with nothing bound, and starts clutch as
-a systemd user service. Nothing runs as root.
+`clutch setup` asks for sudo once, to install a udev rule that lets the
+logged-in user read the machine's keyboards. It then writes
+`~/.config/clutch/config.toml` with no bindings, and starts clutch as a
+systemd user service. Nothing runs as root.
 
 ## Use
 
 ```sh
-clutch status    # what is running, the keyboards it holds, what is bound
-clutch pause     # give the keyboards back, until `clutch resume`
-clutch check     # read the settings and say what is wrong with them
-clutch remove    # take clutch off this machine
+clutch status    # show what is running, which keyboards it holds, and what is bound
+clutch pause     # release the keyboards until `clutch resume`
+clutch check     # read the settings and report any problems
+clutch remove    # uninstall clutch from this machine
 ```
 
-The settings are read again whenever the file is saved; a mistake in
-them leaves the bindings as they were. A key is written with its
-modifiers (`ctrl`, `shift`, `alt`, `super`), and keys pressed one after
-another with a space between them.
+The settings are reloaded whenever the file is saved. If the file has a
+mistake, the existing bindings stay in effect. A key is written with its
+modifiers (`ctrl`, `shift`, `alt`, `super`). For a sequence, write the
+keys in order with a space between them.
 
-A key clutch takes is not seen by anything else, so a shortcut of the
-desktop's on the same key does nothing while clutch runs, and works
-again when it does not.
+A key that clutch handles is not seen by anything else. A desktop
+shortcut on the same key does nothing while clutch is running, and works
+again when it isn't.
 
 ## The box
 
@@ -51,80 +51,82 @@ again when it does not.
 "super+k" = "clutch palette"
 ```
 
-Type, and the windows and applications that match are listed; Enter
-goes to the one picked out. With nothing typed it lists the windows, the
-one used before this one first, so the key and Enter go back to it. The
-first letter says what is looked for:
+The box is a command palette. Type to list the matching windows and
+applications, and press Enter to switch to the selected one. With
+nothing typed, it lists your windows with the previously used one first,
+so the shortcut followed by Enter switches back to it. A prefix narrows
+what is searched:
 
 | | |
 |---|---|
-| `>` | things to do: move the window in front to the next monitor, maximize or close it, send it to a workspace; run a binding; pause clutch |
+| `>` | actions: move the front window to the next monitor, maximize or close it, send it to a workspace; run a binding; pause clutch |
 | `@` | windows only |
 | `#` | workspaces |
-| `!` | a line of shell |
+| `!` | a shell command |
 
-An editor's window is a coding project, and with nothing typed the
-projects are tiles: a letter, the name, how its git stands, and what it
-is written in. None of it is set anywhere: the project is in the
-window's title, the letter is the first free one in its name, and
-`Cargo.toml` or `package.json` says the rest. Alt and the letter goes
-straight to it: clutch is `Super+K`, `Alt+C`.
+An editor window is treated as a coding project. With nothing typed, the
+projects are shown as tiles with a letter, the project's name, its git
+status and its language. None of this needs configuring: the project
+name comes from the window's title, the letter is the first unused one
+in the name, and `Cargo.toml` or `package.json` provides the rest. Press
+Alt and the letter to jump straight to a project. For example, clutch
+itself is `Super+K`, then `Alt+C`.
 
-Two more for keys of their own:
+Two more commands are meant to be bound to keys of their own:
 
 ```sh
-clutch raise firefox       # go to Firefox's window, or start it
-clutch move-monitor        # the window in front, to the next monitor
+clutch raise firefox       # switch to Firefox's window, or start Firefox
+clutch move-monitor        # move the front window to the next monitor
 ```
 
-None of these needs clutch running: they are programs that start, do
-their one thing and are gone, so a shortcut of the desktop's can run
-them as well.
+None of these commands need clutch to be running. They start, do one
+thing and exit, so a desktop shortcut can run them too.
 
-On X11 any program can see and move the windows. On Wayland only the
-desktop can, so on GNOME `clutch setup` also puts a small extension in
-the shell, which lists and moves them for clutch and puts the box in
-the middle of the screen with the keyboard. It needs no sudo, and one
-logout to load. Without it, and on other Wayland desktops, the box has
-the applications, the bindings and the shell.
+On X11, any program can list and move windows. On Wayland only the
+desktop can, so on GNOME `clutch setup` also installs a small shell
+extension. The extension lists and moves windows for clutch, and centers
+the box on screen with keyboard focus. It needs no sudo, but takes
+effect after you log out and back in. Without it, and on other Wayland
+desktops, the box offers only applications, bindings and shell commands.
 
 ## Without sudo
 
-Where the rule cannot be put in, clutch cannot hold the keyboards. On
-GNOME it gives your bindings to GNOME instead, as custom shortcuts of
-GNOME's own, and keeps them in step with the settings file. The file
-and the commands are the same; `clutch status` says which way a machine
-is, and what did not carry over:
+If the udev rule can't be installed, clutch can't grab the keyboards. On
+GNOME it registers your bindings as GNOME custom shortcuts instead, and
+keeps them in sync with the settings file. The file and the commands
+stay the same. `clutch status` shows which mode a machine is in, and
+which bindings couldn't be carried over:
 
-- chords only: GNOME has no sequences;
-- a shortcut of GNOME's on the same keys wins, and `clutch status` gives
-  the command that clears it.
+- Only chords are supported, because GNOME has no key sequences.
+- A GNOME shortcut on the same keys takes priority. `clutch status`
+  prints the command that clears it.
 
-Shortcuts you made in GNOME yourself are left alone.
+Shortcuts you created in GNOME yourself are left alone.
 
 ## If it goes wrong
 
-clutch is between you and every key, so there are three ways out:
+clutch sits between you and every key, so there are three ways out:
 
-- **Backspace, Escape and Enter held together** stop it, whatever else
-  is going on.
-- If it stops answering, systemd kills it within five seconds.
-- However it ends, the kernel gives the keyboards back.
+- **Hold Backspace, Escape and Enter together** to stop it, whatever
+  else is happening.
+- If it stops responding, systemd kills it within five seconds.
+- However it ends, the kernel returns the keyboards.
 
-It reads every key you press and keeps none: nothing is written down
-but which bindings ran.
+clutch reads every key you press and stores none of them. The only
+thing it logs is which bindings ran.
 
 ## Not yet
 
-Tap against hold, layers, and keyboards that are also a mouse or a
-touchpad, which are left alone. Bindings run while the screen is locked.
+- Tap versus hold, and layers.
+- Keyboards that are also a mouse or a touchpad. These are left alone.
+- Bindings still run while the screen is locked.
 
 ## Tests
 
 ```sh
 cargo test                # the logic
-cargo test -- --ignored   # clutch itself, between a keyboard that is not
-                          # real and a reader; needs `clutch setup` first
+cargo test -- --ignored   # clutch itself, between a virtual keyboard and
+                          # a reader; needs `clutch setup` first
 ```
 
 ## License
