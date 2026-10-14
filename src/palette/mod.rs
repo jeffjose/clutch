@@ -2417,12 +2417,12 @@ impl Palette {
             (None, Some(_)) => format!("GNOME extension {}", extension::health().err().unwrap_or("gave no windows".into())),
             (None, None) => "no X display".to_string(),
         };
-        // On the monitor in use, across its middle and a fifth of the way
-        // down. Where that cannot be asked, the desktop places the box.
+        // In the middle of the monitor in use, each way. Where that cannot
+        // be asked, the desktop places the box.
         let monitor = desk.as_ref().and_then(Desk::monitor_in_use);
         let scale = desk.as_ref().and_then(Desk::text_scale).unwrap_or(1.0);
         let layout = Layout::for_monitor(monitor.map_or(1080, |(_, _, _, height)| height), scale);
-        let place = monitor.map(|(x, y, width, height)| (x + (width - layout.full()) / 2, y + height / 5));
+        let place = monitor.map(|(x, y, width, height)| (x + (width - layout.full()) / 2, y + ((height - layout.height()) / 2).max(0)));
         let stock = Stock::gather(desk.as_ref());
         let mut palette = Palette {
             desk,

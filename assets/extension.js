@@ -35,14 +35,14 @@
         return this._windows().find(window => this._id(window) === id);
     }
 
-    // The box, across the middle of the monitor in use and a fifth of
-    // the way down, over everything, with the keyboard.
+    // The box, in the middle of the monitor in use each way, over
+    // everything, with the keyboard.
     _place(window) {
         if (!window || !this._ours(window))
             return;
         const area = global.display.get_monitor_geometry(global.display.get_current_monitor());
         const frame = window.get_frame_rect();
-        window.move_frame(true, area.x + Math.floor((area.width - frame.width) / 2), area.y + Math.floor(area.height / 5));
+        window.move_frame(true, area.x + Math.floor((area.width - frame.width) / 2), area.y + Math.max(0, Math.floor((area.height - frame.height) / 2)));
         window.make_above();
         Main.activateWindow(window);
     }

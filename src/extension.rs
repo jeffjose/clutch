@@ -13,10 +13,10 @@ const NAME: &str = "io.github.jeffjose.Clutch";
 
 /// Which writing of the extension this is. The shell keeps running the
 /// one it started with, and says which that was.
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 
 /// What it answers to.
-const INTERFACE: &str = r#"const VERSION = 2;
+const INTERFACE: &str = r#"const VERSION = 3;
 const INTERFACE = `<node><interface name="io.github.jeffjose.Clutch">
   <method name="State"><arg type="s" direction="out"/></method>
   <method name="Activate"><arg type="u" direction="in"/></method>
