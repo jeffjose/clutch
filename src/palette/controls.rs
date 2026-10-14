@@ -472,6 +472,37 @@ pub fn strength(signal: u32) -> &'static str {
 
 /// The devices in pactl's list of them, as JSON. A sink's monitor is a
 /// source in name only, and is left out.
+/// The same, from pactl's list as it prints it for people: a block for
+/// each, "Sink #5" and then its "Name:", "Description:", "Mute:" and
+/// "Volume:" lines, the volume as "front-left: 65536 / 62% / …".
+fn devices_from_text(listing: &str, input: bool, used: &str) -> Vec<Device> {
+    let mut devices = Vec::new();
+    let mut now: Option<Device> = None;
+    for line in listing.lines() {
+        if line.starts_with("Sink #") || line.starts_with("Source #") {
+            devices.extend(now.take());
+            now = Some(Device { name: String::new(), called: String::new(), input, level: 0, muted: false, used: false });
+            continue;
+        }
+        let Some(device) = now.as_mut() else { continue };
+        let line = line.trim();
+        if let Some(name) = line.strip_prefix("Name: ") {
+            (device.name, device.used) = (name.to_string(), name == used);
+        } else if let Some(called) = line.strip_prefix("Description: ") {
+            device.called = called.to_string();
+        } else if let Some(muted) = line.strip_prefix("Mute: ") {
+            device.muted = muted == "yes";
+        } else if let Some(volume) = line.strip_prefix("Volume: ") {
+            let level = volume.split('/').nth(1).and_then(|part| part.trim().trim_end_matches('%').parse().ok());
+            device.level = level.unwrap_or(0);
+        }
+    }
+    devices.extend(now);
+    // A sink's monitor is a source in name only.
+    devices.retain(|device| !device.name.is_empty() && !device.name.ends_with(".monitor"));
+    devices
+}
+
 fn devices_from(listing: &str, input: bool, used: &str) -> Vec<Device> {
     let listed: Vec<serde_json::Value> = serde_json::from_str(listing).unwrap_or_default();
     let device = |device: &serde_json::Value| -> Option<Device> {
@@ -526,9 +557,20 @@ fn read_players() -> Vec<Player> {
 }
 
 fn read_sound() -> Report {
+    // An older pactl (14, say, as Homebrew's is) has neither get-default-*
+    // nor JSON: there the default is in `pactl info`, and the list is read
+    // as it prints it for people.
+    let info = std::cell::OnceCell::new();
     let list = |kind: &str, input: bool, used: &str| -> Option<Vec<Device>> {
-        let used = printed("pactl", &[used])?;
-        Some(devices_from(&printed("pactl", &["-f", "json", "list", kind])?, input, &used))
+        let said_in_info = |key: &str| -> Option<String> {
+            let info = info.get_or_init(|| printed("pactl", &["info"]).unwrap_or_default());
+            info.lines().find_map(|line| line.strip_prefix(key)).map(|name| name.trim().to_string())
+        };
+        let used = printed("pactl", &[used]).or_else(|| said_in_info(if input { "Default Source:" } else { "Default Sink:" }))?;
+        match printed("pactl", &["-f", "json", "list", kind]) {
+            Some(listing) => Some(devices_from(&listing, input, &used)),
+            None => Some(devices_from_text(&printed("pactl", &["list", kind])?, input, &used)),
+        }
     };
     let players = read_players();
     let Some(mut devices) = list("sinks", false, "get-default-sink") else {
@@ -596,6 +638,17 @@ mod tests {
         assert_eq!((devices[0].called.as_str(), devices[0].level, devices[0].used, devices[0].muted), ("USB Audio", 62, true, false));
         assert!(devices[1].muted && !devices[1].used);
         assert!(devices_from("not json", false, "").is_empty());
+    }
+
+    #[test]
+    fn the_devices_an_older_pactl_lists() {
+        let listing = "Sink #595\n\tState: SUSPENDED\n\tName: out.hdmi\n\tDescription: HDMI Output\n\tMute: no\n\tVolume: front-left: 65536 / 100% / 0.00 dB,   front-right: 65536 / 100% / 0.00 dB\n\
+                       Sink #596\n\tName: out.speaker\n\tDescription: Speaker\n\tMute: yes\n\tVolume: front-left: 40632 /  62% / -12.45 dB\n\
+                       Source #12\n\tName: out.speaker.monitor\n\tDescription: Monitor of Speaker\n";
+        let devices = devices_from_text(listing, false, "out.speaker");
+        assert_eq!(devices.len(), 2);
+        assert_eq!((devices[0].called.as_str(), devices[0].level, devices[0].used), ("HDMI Output", 100, false));
+        assert_eq!((devices[1].level, devices[1].muted, devices[1].used), (62, true, true));
     }
 
     #[test]

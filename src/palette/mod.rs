@@ -1055,18 +1055,22 @@ impl Palette {
         // The small ones, two across, stand over the player; sound has
         // all there is above them, being the one most used.
         let small: Vec<usize> = self.shown.iter().copied().filter(|shown| *shown != controls::SOUND).collect();
-        let (tile_width, tile_height) = ((side - 3 * gap) / 2, 2 * line + pad * 3 / 2);
-        let small_top = bar_top - small.len().div_ceil(2) as i32 * (tile_height + gap);
+        // As many as three to a row: a laptop's Wi-Fi, the microphone and
+        // Bluetooth stand side by side, and leave sound its room. The last
+        // row's few share it between them.
+        let across = small.len().clamp(1, 3);
+        let tile_height = 2 * line + pad * 3 / 2;
+        let small_top = bar_top - small.len().div_ceil(across) as i32 * (tile_height + gap);
         // The widgets, each across the column, between sound and those.
         let widgets_top = small_top - self.widgets.len() as i32 * (self.widget_height() + gap);
         if at == controls::SOUND {
             return (width + gap, head + gap, side - 2 * gap, widgets_top - gap - head - gap);
         }
         let Some(place) = small.iter().position(|shown| *shown == at) else { return (0, 0, 0, 0) };
-        // One alone in its row is as wide as two.
-        let alone = place == small.len() - 1 && small.len() % 2 == 1;
-        let wide = if alone { side - 2 * gap } else { tile_width };
-        (width + gap + (place % 2) as i32 * (tile_width + gap), small_top + (place / 2) as i32 * (tile_height + gap), wide, tile_height)
+        let in_row = (small.len() - place / across * across).min(across) as i32;
+        let tile_width = (side - (in_row + 1) * gap) / in_row;
+        let column = (place % across) as i32;
+        (width + gap + column * (tile_width + gap), small_top + (place / across) as i32 * (tile_height + gap), tile_width, tile_height)
     }
 
     /// How tall a widget's tile is: its title and value, a bar, and a line.
@@ -1970,7 +1974,9 @@ impl Palette {
                 false => (if tile.there || !tile.known { TEXT_COLOR } else { DIM_TEXT_COLOR }, DIM_TEXT_COLOR),
             };
             let inset = pad * 2 / 3;
-            self.text.draw(&mut canvas, tile_left + inset, tile_top + pad / 2, px, main, controls::NAMES[at]);
+            // As much of its name as leaves its key clear.
+            let name = self.text.clipped(controls::NAMES[at], tile_width - 2 * inset - line, px);
+            self.text.draw(&mut canvas, tile_left + inset, tile_top + pad / 2, px, main, &name);
             // Its key, as a project's is drawn: Alt and it flips it.
             let cap = line;
             self.key_cap(&mut canvas, (tile_left + tile_width - inset / 2 - cap, tile_top + pad / 2, cap), ground, controls::key_of(at).unwrap_or(' '));
@@ -1990,7 +1996,11 @@ impl Palette {
                 controls::SOUND => tile_top + pad / 2 + line + pad / 6,
                 _ => tile_top + tile_height - pad / 2 - Text::line_height(small),
             };
-            self.text.draw(&mut canvas, tile_left + inset, what_top, small, dim, &what);
+            // (Where sound has too little room for it over its buttons, it goes without.)
+            let room = at != controls::SOUND || what_top + Text::line_height(small) <= self.sound_bar().1 - pad / 6;
+            if room {
+                self.text.draw(&mut canvas, tile_left + inset, what_top, small, dim, &what);
+            }
             if at == controls::SOUND {
                 let device = self.controls.devices.iter().find(|device| device.used && !device.input).cloned();
                 let muted = device.as_ref().is_some_and(|device| device.muted);
