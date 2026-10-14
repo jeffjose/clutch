@@ -12,6 +12,15 @@ use std::time::Duration;
 const RULE: &str = include_str!("../assets/70-clutch.rules");
 pub const RULE_PATH: &str = "/etc/udev/rules.d/70-clutch.rules";
 const UNIT: &str = include_str!("../assets/clutch.service");
+const ICON: &str = include_str!("../assets/clutch.svg");
+const ENTRY: &str = include_str!("../assets/clutch.desktop");
+
+/// Where the icon and the menu entry go, among your own.
+fn menu_paths() -> (PathBuf, PathBuf) {
+    let home = PathBuf::from(env::var_os("HOME").unwrap_or_default());
+    let data = env::var_os("XDG_DATA_HOME").map_or(home.join(".local/share"), PathBuf::from);
+    (data.join("icons/hicolor/scalable/apps/clutch.svg"), data.join("applications/clutch.desktop"))
+}
 
 /// The udev rule goes in, or with nothing to put, comes out; then udev
 /// looks at the keyboards again. The one thing here that needs root.
@@ -72,6 +81,16 @@ pub fn setup() -> Result<(), String> {
         print!("{}", style.line(GREEN, done, what));
     }
 
+    // The icon, and the entry that ties it to the box's window and puts
+    // clutch in the list of programs.
+    let exe = env::current_exe().map_err(|e| e.to_string())?;
+    let entry = ENTRY.replace("Exec=clutch", &format!("Exec={}", exe.display()));
+    let (icon_at, entry_at) = menu_paths();
+    let same = fs::read_to_string(&entry_at).ok().as_deref() == Some(&entry) && fs::read_to_string(&icon_at).ok().as_deref() == Some(ICON);
+    write(&icon_at, ICON)?;
+    write(&entry_at, &entry)?;
+    print!("{}", style.line(GREEN, if same { "Unchanged" } else { "Installed" }, "icon and menu entry"));
+
     let settings = config::path();
     if settings.exists() {
         print!("{}", style.line(GREEN, "Unchanged", &config::short(&settings)));
@@ -80,7 +99,6 @@ pub fn setup() -> Result<(), String> {
         print!("{}", style.line(GREEN, "Created", &format!("{} (nothing bound yet)", config::short(&settings))));
     }
 
-    let exe = env::current_exe().map_err(|e| e.to_string())?;
     write(&unit_path(), &UNIT.replace("@EXE@", &exe.to_string_lossy()))?;
     systemctl(&["daemon-reload"])?;
     systemctl(&["enable", "--quiet", "clutch.service"])?;
@@ -121,6 +139,10 @@ pub fn remove() -> Result<(), String> {
         }
         extension::remove();
         print!("{}", style.line(GREEN, "Removed", "GNOME extension"));
+    }
+    let (icon_at, entry_at) = menu_paths();
+    if fs::remove_file(entry_at).is_ok() | fs::remove_file(icon_at).is_ok() {
+        print!("{}", style.line(GREEN, "Removed", "icon and menu entry"));
     }
     if Path::new(RULE_PATH).exists() {
         match as_root("", "remove") {

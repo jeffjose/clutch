@@ -120,7 +120,16 @@ pub fn icon(name: &str) -> Option<Icon> {
 }
 
 fn read(path: &Path) -> Option<Icon> {
-    let mut decoder = png::Decoder::new(std::io::BufReader::new(fs::File::open(path).ok()?));
+    decode(std::io::BufReader::new(fs::File::open(path).ok()?))
+}
+
+/// clutch's own icon, which it carries.
+pub fn own() -> Option<Icon> {
+    decode(std::io::Cursor::new(include_bytes!("../../assets/clutch.png")))
+}
+
+fn decode(png: impl std::io::BufRead + std::io::Seek) -> Option<Icon> {
+    let mut decoder = png::Decoder::new(png);
     // Every kind of PNG comes out as eight bits each of what it has.
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().ok()?;

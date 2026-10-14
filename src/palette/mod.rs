@@ -34,7 +34,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::platform::wayland::WindowAttributesExtWayland;
 use winit::platform::x11::{WindowAttributesExtX11, WindowType};
-use winit::window::{Window, WindowId, WindowLevel};
+use winit::window::{Icon as WindowIcon, Window, WindowId, WindowLevel};
 
 const TEXT_COLOR: u32 = 0xEEEEEE;
 const DIM_TEXT_COLOR: u32 = 0x9A9A9A;
@@ -725,7 +725,12 @@ impl ApplicationHandler for Palette {
         }
         let size = PhysicalSize::new(self.layout.width as u32, self.layout.height() as u32);
         // The name is what GNOME's shell knows the box by, to place it.
-        let attributes = Window::default_attributes().with_title("clutch");
+        // Its own icon, for the desktops that show a window's.
+        let icon = apps::own().and_then(|icon| {
+            let rgba = icon.pixels.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, (p >> 24) as u8]).collect();
+            WindowIcon::from_rgba(rgba, icon.width as u32, icon.height as u32).ok()
+        });
+        let attributes = Window::default_attributes().with_title("clutch").with_window_icon(icon);
         let attributes = WindowAttributesExtX11::with_name(attributes, "clutch", "clutch");
         let attributes = WindowAttributesExtWayland::with_name(attributes, "clutch", "clutch");
         let mut attributes = attributes

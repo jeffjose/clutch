@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=clutch
+GenericName=Keys and the box
+Comment=Find a window, a project or an application
+Exec=clutch palette
+Icon=clutch
+Terminal=false
+Categories=Utility;
+Keywords=launcher;palette;windows;shortcuts;keys;
+StartupWMClass=clutch
