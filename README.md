@@ -22,8 +22,8 @@ clutch setup
 
 `clutch setup` asks for sudo once, to install a udev rule that lets the
 logged-in user read the machine's keyboards. It then writes
-`~/.config/clutch/config.toml` with no bindings, and starts clutch as a
-systemd user service. Nothing runs as root.
+`~/.config/clutch/config.toml`, which binds only Alt+K, to the box, and
+starts clutch as a systemd user service. Nothing runs as root.
 
 ## Use
 
@@ -48,7 +48,7 @@ again when it isn't.
 ![The box, listing things to do](docs/palette.png)
 
 ```toml
-"super+k" = "clutch palette"
+"alt+k" = "clutch palette"
 ```
 
 The box is a command palette. Type to list the matching windows and
@@ -63,14 +63,97 @@ what is searched:
 | `@` | windows only |
 | `#` | workspaces |
 | `!` | a shell command |
+| `"` | clipboard history, numbered from the newest: `"3` is the third; Enter copies it again, Alt+3 at once. The side shows the one picked out whole |
+| `:` | emoji by name; Enter copies one |
+
+Some things typed are answered first, above everything else:
+
+- a sum or a conversion: `12*7`, `sqrt(2)`, `5 km in mi`, `350f in c`, `2.5 gb in mb`. Enter copies the answer.
+- a web address: `youtube.com` opens it in a new tab of your browser.
+- a search from `[links]` in the settings, as the word, a slash and what to look for: `g/rust lifetimes` searches Google, `gh/clutch` GitHub, `yt/…` YouTube. The settings list more, commented out. A link without `{}` opens as it is, and what matches nothing is offered to `g`.
+- a timer: `timer 25m tea`, `timer 1h30m`, `timer 10` (minutes). When it is done the desktop says so, with a sound. Timers that are running are listed under the projects, counting down; Enter on one stops it.
+
+The clipboard history is kept by the running clutch, in
+`~/.local/state/clutch/clipboard` (the last 100 copies, readable only by
+you). What a password manager marks as a secret is not kept. It needs
+`xclip` on X11; on Wayland it asks `wl-paste`, where that works.
 
 An editor window is treated as a coding project. With nothing typed, the
-projects are shown as tiles with a letter, the project's name, its git
-status and its language. None of this needs configuring: the project
-name comes from the window's title, the letter is the first unused one
-in the name, and `Cargo.toml` or `package.json` provides the rest. Press
-Alt and the letter to jump straight to a project. For example, clutch
-itself is `Super+K`, then `Alt+C`.
+projects are shown as tiles, four across, each with an icon, the
+project's name and its key. A tile also shows the number of changed
+files when there are any, and the branch when it is not the main one.
+None of this needs configuring: the project name comes from the
+window's title, and the key is the first unused letter in the name.
+Press Alt and the letter to jump straight to a project. For
+example, clutch itself is `Alt+K`, then `Alt+C`: hold Alt and press K,
+then C. A letter that is itself bound with Alt or Super, as K is here,
+is not given to a project.
+
+A project's icon is its own where its folder has one: a favicon, a file
+named `icon` or `logo`, or one named after the project. Otherwise it is
+a drawing on a colored background, chosen by the project's name so that
+it stays the same. Icons are cached in `~/.cache/clutch/projects` and
+looked for again after a day or when the file changes; `>Refresh project
+icons` clears the cache. Icons other than PNG need ImageMagick.
+
+Right-click a project, or press the Menu key, to change how it looks:
+give it a color from the menu directly, shuffle its look, put back the
+look it came with, or open "Icon and color…". There you choose what is
+on its tile (one of 144 drawings, any emoji, two letters, its own icon
+or a picture of your own; Ctrl+Tab goes between them, and typing
+searches drawings and emoji by name), its color (from Radix's or
+Tailwind's palette), its background
+(eighteen, from a plain tint to rays and stripes) and its shape
+(twenty-one). Looks are kept in `~/.config/clutch/looks.toml`. Choosing
+a picture needs `zenity`; emoji need the Noto Color Emoji font and
+Unicode's `emoji-test.txt`, which most distributions install.
+
+Anything gone into (Wi-Fi, Sound, a project's look) has a "← Find"
+button where the search was; Esc, or Backspace with nothing typed, goes
+back too.
+
+Ctrl+K on anything picked out lists everything that can be done to it,
+and typing narrows the list: a project's look, its path, its page on
+GitHub; a copy pasted into the window before (Ctrl+Enter, with
+`xdotool`) or forgotten (Ctrl+D). Each action's keys work without the
+list too. The foot of the box says what Enter will do. Up is Ctrl+P,
+down Ctrl+N or Ctrl+J.
+
+While you type, the side beside the list shows more of what is picked
+out: a project's branch, last commit and changed files, an emoji large,
+a sum in hex and binary, the command an application runs.
+
+Every folder in `~/scripts` (and `~/code`, `~/src`, `~/projects`, `~/work`,
+`~/dev`, `~/repos`, `~/git`) is a project: typing `drift` and Enter is
+`code ~/scripts/drift`. A word that matches nothing offers "New project",
+which makes the folder and opens it.
+
+Projects that are not open are tiles too, more dimly, where a launcher
+was made for the folder (a `.desktop` file whose `StartupWMClass` is
+`code-` and the folder's path, as VS Code's own are named). Enter, a
+click or Alt and its letter starts it.
+
+Beside the list are the controls: sound, large, with its volume and
+buttons to mute, go quieter and go louder; the microphone and
+Bluetooth; Wi-Fi, on a laptop; and what is playing, along the foot.
+Each has a letter: Alt and the letter flips it, with the box still up, so
+`Alt+K` then `Alt+P` pauses whatever is playing (`S` mutes, `M`
+microphone, `B` Bluetooth, `W` Wi-Fi, `P` play, `N` next). Those
+letters are never given to projects.
+
+The volume changes with the box still up: Alt+↑ and Alt+↓ anywhere in
+it, the wheel over the Sound tile, its buttons, or a click on its bar.
+Tab moves to the controls; Space or a click flips one, and on Sound the
+arrows across are the volume. A click on the rest of the Sound tile
+goes into it, and so does Wi-Fi's →. Gone into, Wi-Fi and Sound list instead: the
+networks to join or leave, and the devices with their levels, where the
+left and right arrows change the volume, Enter makes a device the one
+in use and Ctrl+M mutes it. Whatever is playing is listed first: Enter
+plays or pauses it, and the arrows go to the previous or next track.
+Esc goes back. The controls can also be
+found by typing their names. They use `nmcli`, `pactl`, `busctl`, `bluetoothctl`,
+and `gsettings` or `xfconf-query`; a control whose tool is missing says
+"not here".
 
 Two more commands are meant to be bound to keys of their own:
 

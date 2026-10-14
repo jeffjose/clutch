@@ -96,7 +96,7 @@ pub fn setup() -> Result<(), String> {
         print!("{}", style.line(GREEN, "Unchanged", &config::short(&settings)));
     } else {
         write(&settings, config::EXAMPLE)?;
-        print!("{}", style.line(GREEN, "Created", &format!("{} (nothing bound yet)", config::short(&settings))));
+        print!("{}", style.line(GREEN, "Created", &format!("{} (Alt+K opens the box)", config::short(&settings))));
     }
 
     write(&unit_path(), &UNIT.replace("@EXE@", &exe.to_string_lossy()))?;

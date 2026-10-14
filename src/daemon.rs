@@ -90,6 +90,8 @@ pub fn run(options: Options) -> ! {
     if let Some(dir) = options.config.parent() {
         let _ = fs::create_dir_all(dir);
     }
+    // What is copied is kept, for the box to list.
+    crate::clip::watch();
     let watch = Watch::new(&[
         (Path::new(INPUT), libc::IN_CREATE | libc::IN_DELETE | libc::IN_ATTRIB),
         (
@@ -379,11 +381,11 @@ impl Daemon {
         let length = stream.read(&mut buffer).unwrap_or(0);
         let asked = String::from_utf8_lossy(&buffer[..length]).trim().to_string();
         // What is asked, then how wide the asker's terminal is and
-        // whether it takes colour.
+        // whether it takes color.
         let mut words = asked.split(' ');
         let what = words.next().unwrap_or("");
         let columns = words.next().and_then(|columns| columns.parse().ok()).unwrap_or(0);
-        let style = Style { colour: words.next() == Some("colour") };
+        let style = Style { color: words.next() == Some("color") };
         let reply = match what {
             "status" => self.status(columns, style),
             "fix" => self.fix(style),
@@ -490,7 +492,7 @@ impl Daemon {
         let mut blocked = 0;
         for (binding, runs) in self.bindings.iter().zip(&self.runs) {
             let note = given.notes.iter().find(|note| self.gnome && note.keys == binding.keys);
-            let (colour, word) = match note {
+            let (color, word) = match note {
                 _ if !working => (YELLOW, "Idle"),
                 Some(note) if note.fix.is_some() => (RED, "Blocked"),
                 Some(note) if note.what.starts_with("skipped") => (YELLOW, "Skipped"),
@@ -501,7 +503,7 @@ impl Daemon {
             };
             let pressed = if !self.gnome && *runs > 0 { format!("{runs}×") } else { String::new() };
             let shown = style.dim(&format!("{:command$}", cut(&binding.command, command)));
-            let row = style.line(colour, word, &format!("{:keys$}  {shown}  {pressed}", binding.keys));
+            let row = style.line(color, word, &format!("{:keys$}  {shown}  {pressed}", binding.keys));
             text += row.trim_end();
             text += "\n";
             if let Some(note) = note.filter(|_| working) {

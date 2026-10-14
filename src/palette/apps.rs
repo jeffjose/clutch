@@ -17,6 +17,11 @@ pub struct App {
     pub exec: String,
     pub terminal: bool,
     pub icon: String,
+    /// What its windows are known by, where it says.
+    pub class: String,
+    /// When its file was last written, in seconds: for a launcher made
+    /// each time a folder is opened, when that was.
+    pub written: u64,
 }
 
 /// Where applications and icons are kept: your own first, then the system's.
@@ -30,7 +35,7 @@ fn data_dirs() -> Vec<PathBuf> {
 
 /// One .desktop file, if it is an application that is meant to be shown.
 fn parse(text: &str) -> Option<App> {
-    let mut app = App { name: String::new(), kind: String::new(), keywords: String::new(), exec: String::new(), terminal: false, icon: String::new() };
+    let mut app = App { name: String::new(), kind: String::new(), keywords: String::new(), exec: String::new(), terminal: false, icon: String::new(), class: String::new(), written: 0 };
     let mut main = false;
     for line in text.lines() {
         if line.starts_with('[') {
@@ -46,6 +51,7 @@ fn parse(text: &str) -> Option<App> {
             "Keywords" => app.keywords = value.replace(';', " "),
             "Exec" => app.exec = command(value),
             "Icon" => app.icon = value.into(),
+            "StartupWMClass" => app.class = value.into(),
             "Terminal" => app.terminal = value == "true",
             "Type" if value != "Application" => return None,
             "NoDisplay" | "Hidden" if value == "true" => return None,
@@ -84,7 +90,9 @@ pub fn all() -> Vec<App> {
             if path.extension().is_none_or(|kind| kind != "desktop") || !seen.insert(file.file_name()) {
                 continue;
             }
-            apps.extend(fs::read_to_string(&path).ok().as_deref().and_then(parse));
+            let written = file.metadata().ok().and_then(|data| data.modified().ok()).and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok());
+            let app = fs::read_to_string(&path).ok().as_deref().and_then(parse);
+            apps.extend(app.map(|app| App { written: written.map_or(0, |since| since.as_secs()), ..app }));
         }
     }
     apps.sort_by_key(|app| app.name.to_lowercase());
@@ -119,7 +127,7 @@ pub fn icon(name: &str) -> Option<Icon> {
     dirs.iter().find_map(|dir| read(&dir.join(format!("pixmaps/{name}.png"))))
 }
 
-fn read(path: &Path) -> Option<Icon> {
+pub fn read(path: &Path) -> Option<Icon> {
     decode(std::io::BufReader::new(fs::File::open(path).ok()?))
 }
 
@@ -128,7 +136,7 @@ pub fn own() -> Option<Icon> {
     decode(std::io::Cursor::new(include_bytes!("../../assets/clutch.png")))
 }
 
-fn decode(png: impl std::io::BufRead + std::io::Seek) -> Option<Icon> {
+pub fn decode(png: impl std::io::BufRead + std::io::Seek) -> Option<Icon> {
     let mut decoder = png::Decoder::new(png);
     // Every kind of PNG comes out as eight bits each of what it has.
     decoder.set_transformations(png::Transformations::normalize_to_color8());

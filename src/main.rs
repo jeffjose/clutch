@@ -1,3 +1,4 @@
+mod clip;
 mod config;
 mod daemon;
 mod desk;
@@ -20,6 +21,7 @@ clutch: keys that are yours before any program's.
 
   clutch palette [TEXT]         the box: type to find a window or an application
                                   > things to do   @ windows   # workspaces   ! shell
+                                  \" clipboard   : emoji   12*7   timer 25m   g/search
   clutch raise NAME [COMMAND]   go to a program's window, or start it
   clutch move-monitor [prev]    the window in front, to the next monitor
 
@@ -53,8 +55,8 @@ fn ask(what: &str) -> Result<String, String> {
 /// Ask the running clutch for something and print its answer, written
 /// for this terminal.
 fn tell(what: &str) -> Result<(), String> {
-    let colour = if style::Style::of_terminal().colour { " colour" } else { "" };
-    let reply = ask(&format!("{what} {}{colour}", columns()))?;
+    let color = if style::Style::of_terminal().color { " color" } else { "" };
+    let reply = ask(&format!("{what} {}{color}", columns()))?;
     // A new clutch was installed over one that is still running.
     if reply.starts_with("not something clutch does") {
         return Err(format!("the clutch that is running is older than this one and has no `{what}`: systemctl --user restart clutch"));

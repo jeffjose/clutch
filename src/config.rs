@@ -18,6 +18,9 @@ pub struct Binding {
 pub struct Config {
     pub bindings: Vec<Binding>,
     pub timeout: Duration,
+    /// Words that, typed in the box, open a web address: "gh" and
+    /// "https://github.com/{}", where {} is what is typed after the word.
+    pub links: Vec<(String, String)>,
 }
 
 #[derive(Deserialize)]
@@ -26,6 +29,8 @@ struct File {
     timeout: Option<u64>,
     #[serde(default)]
     bind: toml::Table,
+    #[serde(default)]
+    links: toml::Table,
 }
 
 impl Config {
@@ -44,7 +49,15 @@ impl Config {
             bindings.push(Binding { keys, command });
         }
         let timeout = Duration::from_millis(file.timeout.unwrap_or(2000));
-        Ok((Config { bindings, timeout }, tree))
+        let mut links = Vec::new();
+        for (word, address) in file.links {
+            let address = address.as_str().ok_or(format!("links.{word}: the address must be in quotes"))?;
+            if word.contains(char::is_whitespace) {
+                return Err(format!("links.\"{word}\": one word, with no spaces"));
+            }
+            links.push((word.to_lowercase(), address.to_string()));
+        }
+        Ok((Config { bindings, timeout, links }, tree))
     }
 }
 
@@ -108,7 +121,10 @@ mod tests {
     #[test]
     fn the_example_is_a_settings_file() {
         let (config, _) = Config::parse(EXAMPLE).unwrap();
-        assert!(config.bindings.is_empty());
+        // It binds the box, and nothing else.
+        let bound: Vec<(&str, &str)> = config.bindings.iter().map(|binding| (binding.keys.as_str(), binding.command.as_str())).collect();
+        assert_eq!(bound, [("alt+k", "clutch palette")]);
+        assert!(config.links.iter().any(|(word, address)| word == "gh" && address.contains("{}")));
     }
 
     #[test]

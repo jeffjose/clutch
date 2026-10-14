@@ -60,7 +60,7 @@ impl<'a> Canvas<'a> {
     /// window's pixels can be seen through: every pixel solid, but those
     /// outside the curve of a corner clear, and those on it part-way.
     /// The panel must have been drawn rounded on a ground of nothing, so
-    /// that the colours along the curve are already thinned to match.
+    /// that the colors along the curve are already thinned to match.
     pub fn round_window(&mut self, radius: i32) {
         self.pixels.iter_mut().for_each(|pixel| *pixel |= 0xFF00_0000);
         let (width, height) = (self.width, self.height);
@@ -98,8 +98,8 @@ impl<'a> Canvas<'a> {
             let (top, bottom) = (row * icon.height / size, ((row + 1) * icon.height).div_ceil(size).max(row * icon.height / size + 1));
             for column in 0..size {
                 let (left, right) = (column * icon.width / size, ((column + 1) * icon.width).div_ceil(size).max(column * icon.width / size + 1));
-                // Colours are weighed by how opaque they are, or the
-                // unseen colour of a clear pixel would bleed in.
+                // Colors are weighed by how opaque they are, or the
+                // unseen color of a clear pixel would bleed in.
                 let (mut a, mut r, mut g, mut b, mut count) = (0u64, 0u64, 0u64, 0u64, 0u64);
                 for sy in top..bottom.min(icon.height) {
                     for pixel in &icon.pixels[sy * icon.width + left..sy * icon.width + right.min(icon.width)] {
@@ -142,14 +142,30 @@ pub fn mix(a: u32, b: u32, amount: u32) -> u32 {
     lerp(0xFF00FF) | lerp(0x00FF00)
 }
 
+/// The font the box is set in.
+pub const GEIST: &[u8] = include_bytes!("../../assets/Geist-Regular.ttf");
+
 /// Which font the icons are, where the others are counted from 0.
 const ICONS: usize = usize::MAX;
+/// And the drawings in two tones, which have a font and a part of Unicode
+/// of their own: `duo` says which letters a drawing is.
+const DRAWINGS: usize = usize::MAX - 1;
+const DRAWINGS_FROM: u32 = 0xF0000;
+
+/// The two letters that draw one of Solar's two-tone drawings: the full
+/// tone, and the one drawn at half strength.
+pub fn duo(drawing: usize) -> (char, char) {
+    let letter = |tone: u32| char::from_u32(DRAWINGS_FROM + 2 * drawing as u32 + tone).unwrap_or(' ');
+    (letter(0), letter(1))
+}
 
 /// Text rendering with the font clutch carries, and the icons, which are
 /// letters of a font of their own.
 pub struct Text {
     font: Option<fontdue::Font>,
     icons: Option<fontdue::Font>,
+    /// The two-tone drawings, read the first time one is drawn.
+    drawings: Option<fontdue::Font>,
     /// Fonts for the letters the main one lacks, Korean say, each found
     /// through fontconfig the first time such a letter comes up. A font
     /// for a large script takes a while to load, so that happens on
@@ -164,9 +180,9 @@ pub struct Text {
 impl Text {
     pub fn load() -> Self {
         let load = |bytes: &[u8]| fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok();
-        let font = load(include_bytes!("../../assets/Geist-Regular.ttf"));
+        let font = load(GEIST);
         let icons = load(include_bytes!("../../assets/solar.ttf"));
-        Text { font, icons, others: Vec::new(), loading: None, sought: HashSet::new(), glyphs: HashMap::new() }
+        Text { font, icons, drawings: None, others: Vec::new(), loading: None, sought: HashSet::new(), glyphs: HashMap::new() }
     }
 
     pub fn line_height(px: u32) -> i32 {
@@ -185,6 +201,13 @@ impl Text {
         // The icons have a font, and a part of Unicode, to themselves.
         if ('\u{e000}'..='\u{f8ff}').contains(&c) {
             return ICONS;
+        }
+        if c as u32 >= DRAWINGS_FROM {
+            if self.drawings.is_none() {
+                let font = include_bytes!("../../assets/solar-duotone.ttf") as &[u8];
+                self.drawings = fontdue::Font::from_bytes(font, fontdue::FontSettings::default()).ok();
+            }
+            return DRAWINGS;
         }
         let has = |font: &fontdue::Font| font.lookup_glyph_index(c) != 0;
         if self.font.as_ref().is_none_or(has) || c.is_control() {
@@ -211,8 +234,15 @@ impl Text {
         match which {
             0 => self.font.as_ref(),
             ICONS => self.icons.as_ref(),
+            DRAWINGS => self.drawings.as_ref(),
             other => self.others.get(other - 1),
         }
+    }
+
+    /// The letter as its font knows it: the drawings are kept, in theirs,
+    /// where the icons are in the icons'.
+    fn letter(which: usize, c: char) -> char {
+        if which == DRAWINGS { char::from_u32(c as u32 - DRAWINGS_FROM + 0xE000).unwrap_or(c) } else { c }
     }
 
     /// The size a letter is drawn at: icons a little larger than the text
@@ -225,7 +255,7 @@ impl Text {
         let mut width = 0.0;
         for c in text.chars() {
             let which = self.font_with(c);
-            width += self.font(which).map_or(0.0, |font| font.metrics(c, Self::size(which, px)).advance_width);
+            width += self.font(which).map_or(0.0, |font| font.metrics(Self::letter(which, c), Self::size(which, px)).advance_width);
         }
         width.ceil() as i32
     }
@@ -259,7 +289,7 @@ impl Text {
             if !self.glyphs.contains_key(&(c, px)) {
                 let which = self.font_with(c);
                 let Some(font) = self.font(which) else { continue };
-                let glyph = font.rasterize(c, Self::size(which, px));
+                let glyph = font.rasterize(Self::letter(which, c), Self::size(which, px));
                 self.glyphs.insert((c, px), glyph);
             }
             let (metrics, coverage) = &self.glyphs[&(c, px)];
@@ -268,6 +298,9 @@ impl Text {
             // takes for a baseline; letters stand on the text's.
             let icon = ('\u{e000}'..='\u{f8ff}').contains(&c);
             let top = match icon {
+                // A drawing's two tones are placed by the square both are
+                // drawn in, or one would sit askew of the other.
+                _ if c as u32 >= DRAWINGS_FROM => y + (Self::line_height(px) + px as i32) / 2 - metrics.ymin - metrics.height as i32,
                 true => y + (Self::line_height(px) - metrics.height as i32) / 2,
                 false => baseline - metrics.ymin - metrics.height as i32,
             };

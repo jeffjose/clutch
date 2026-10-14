@@ -1,5 +1,5 @@
 //! How clutch speaks on a terminal: as cargo does. A word for what was
-//! done or how something stands, bold and coloured, set to the right of
+//! done or how something stands, bold and colored, set to the right of
 //! a column, and then the thing itself.
 
 use std::env;
@@ -12,21 +12,21 @@ pub const RED: &str = "31";
 /// How wide the column of words is.
 pub const VERB: usize = 12;
 
-/// The words of one piece of output, in colour or not.
+/// The words of one piece of output, in color or not.
 #[derive(Clone, Copy)]
 pub struct Style {
-    pub colour: bool,
+    pub color: bool,
 }
 
 impl Style {
-    /// In colour when what is written to is a terminal, unless asked not to.
+    /// In color when what is written to is a terminal, unless asked not to.
     pub fn of_terminal() -> Style {
         let terminal = unsafe { libc::isatty(1) } == 1;
-        Style { colour: terminal && env::var_os("NO_COLOR").is_none() }
+        Style { color: terminal && env::var_os("NO_COLOR").is_none() }
     }
 
     fn paint(&self, codes: &str, text: &str) -> String {
-        match self.colour {
+        match self.color {
             true => format!("\x1b[{codes}m{text}\x1b[0m"),
             false => text.to_string(),
         }
@@ -40,9 +40,9 @@ impl Style {
         self.paint("1", text)
     }
 
-    /// "    Finished the thing": the word in its colour, then the rest.
-    pub fn line(&self, colour: &str, verb: &str, text: &str) -> String {
-        format!("{} {text}\n", self.paint(&format!("1;{colour}"), &format!("{verb:>VERB$}")))
+    /// "    Finished the thing": the word in its color, then the rest.
+    pub fn line(&self, color: &str, verb: &str, text: &str) -> String {
+        format!("{} {text}\n", self.paint(&format!("1;{color}"), &format!("{verb:>VERB$}")))
     }
 
     /// A line under another, saying more about it.
@@ -65,11 +65,11 @@ mod tests {
 
     #[test]
     fn the_word_to_the_right_of_its_column() {
-        let plain = Style { colour: false };
+        let plain = Style { color: false };
         assert_eq!(plain.line(GREEN, "Bound", "ctrl+space"), "       Bound ctrl+space\n");
         assert_eq!(plain.under("why"), "             why\n");
         assert_eq!(plain.warning("careful"), "warning: careful\n");
-        let colour = Style { colour: true };
-        assert_eq!(colour.line(GREEN, "Bound", "x"), "\x1b[1;32m       Bound\x1b[0m x\n");
+        let color = Style { color: true };
+        assert_eq!(color.line(GREEN, "Bound", "x"), "\x1b[1;32m       Bound\x1b[0m x\n");
     }
 }

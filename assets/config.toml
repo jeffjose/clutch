@@ -1,6 +1,7 @@
 # clutch: the keys it takes, and what each runs.
 #
-# Nothing here is bound until you take the # off the front of a line.
+# Only the box is bound to begin with. The other lines are examples: take
+# the # off the front of one to bind it.
 #
 # A key is written with its modifiers: "ctrl+space", "super+shift+s",
 # "print". The modifiers are ctrl, shift, alt and super. Keys pressed one
@@ -14,15 +15,45 @@
 # timeout = 2000
 
 [bind]
+# The box that finds windows, projects and applications, and has the
+# controls for Wi-Fi and sound. In it Alt and a letter goes to a project,
+# so with Alt+K the same Alt opens the box and picks from it. Super is
+# the key some call Cmd or Win. Ctrl+K works too, but it is taken from
+# every program then: the shell's kill-line, and the start of many of VS
+# Code's keys.
+"alt+k" = "clutch palette"
+# "super+k" = "clutch palette"
+
 # A drop-down terminal:
 # "ctrl+space" = "tilix --quake"
 #   on GNOME, with the ddterm extension:
 # "ctrl+space" = "gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/ddterm --method com.github.amezin.ddterm.Extension.Toggle"
 
-# The box that finds windows, projects and applications. Super is the
-# key some call Cmd or Win. Ctrl+K works too, but it is taken from every
-# program then: the shell's kill-line, and the start of many of VS Code's keys.
-# "super+k" = "clutch palette"
-
 # A sequence:
 # "super+space t" = "xterm"
+
+[links]
+# Searches from the box: the word, a slash, and what to look for.
+# "g/rust lifetimes" searches Google; {} is what comes after the slash.
+# An address without {} opens as it is: "mail" alone opens your mail.
+# What matches nothing in the box is offered to g, too.
+g = "https://www.google.com/search?q={}"
+gh = "https://github.com/search?q={}"
+yt = "https://www.youtube.com/results?search_query={}"
+# ddg = "https://duckduckgo.com/?q={}"
+# maps = "https://www.google.com/maps/search/{}"
+# images = "https://www.google.com/search?tbm=isch&q={}"
+# w = "https://en.wikipedia.org/wiki/Special:Search?search={}"
+# r = "https://www.reddit.com/search/?q={}"
+# so = "https://stackoverflow.com/search?q={}"
+# mdn = "https://developer.mozilla.org/en-US/search?q={}"
+# crates = "https://crates.io/search?q={}"
+# docs = "https://docs.rs/{}"
+# npm = "https://www.npmjs.com/search?q={}"
+# pypi = "https://pypi.org/search/?q={}"
+# amazon = "https://www.amazon.com/s?k={}"
+# imdb = "https://www.imdb.com/find/?q={}"
+# t = "https://translate.google.com/?sl=auto&tl=en&text={}"
+# claude = "https://claude.ai/new?q={}"
+# mail = "https://mail.google.com"
+# cal = "https://calendar.google.com"

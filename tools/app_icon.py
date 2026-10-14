@@ -1,6 +1,6 @@
 """Makes clutch's own icon, the one a list of programs and the box's window
 show: Solar's gear-change pattern in a square, from its bold duotone set,
-with the two tones made a colour and white as hotshot's icon is, so that
+with the two tones made a color and white as hotshot's icon is, so that
 it reads on a dark panel and on a light one alike.
 
     python3 tools/app_icon.py ICONS_JSON assets/clutch.svg
@@ -19,7 +19,7 @@ import json
 import re
 import sys
 
-# The square, and the gear pattern drawn on it. The colour is the one the
+# The square, and the gear pattern drawn on it. The color is the one the
 # box picks things out in.
 BODY = "#3E63DD"
 MARKS = "#FFFFFF"

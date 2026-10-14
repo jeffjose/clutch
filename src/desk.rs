@@ -90,6 +90,15 @@ impl Desk {
         }
     }
 
+    /// How much larger than plain the desktop draws its letters, where
+    /// that can be asked here: on Wayland the window is told.
+    pub fn text_scale(&self) -> Option<f64> {
+        match self {
+            Desk::X11(desk) => Some(desk.text_scale()),
+            Desk::Gnome(_) => None,
+        }
+    }
+
     /// The names of the workspaces, and which one is in view.
     pub fn workspaces(&self) -> (Vec<String>, u32) {
         match self {
@@ -359,6 +368,13 @@ impl X11 {
         });
         monitors.sort();
         monitors
+    }
+
+    /// What the desktop has set Xft.dpi to, over the 96 that is plain.
+    fn text_scale(&self) -> f64 {
+        let resources = String::from_utf8_lossy(&self.bytes(self.root, "RESOURCE_MANAGER")).into_owned();
+        let dpi = resources.lines().find_map(|line| line.strip_prefix("Xft.dpi:")?.trim().parse::<f64>().ok());
+        dpi.map_or(1.0, |dpi| (dpi / 96.0).clamp(0.5, 4.0))
     }
 
     /// The monitor the pointer is on, which is where one is looking.
