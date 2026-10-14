@@ -21,6 +21,8 @@ pub struct Config {
     /// Words that, typed in the box, open a web address: "gh" and
     /// "https://github.com/{}", where {} is what is typed after the word.
     pub links: Vec<(String, String)>,
+    /// Programs whose output is shown as tiles in the box.
+    pub widgets: Vec<crate::widgets::Widget>,
 }
 
 #[derive(Deserialize)]
@@ -31,6 +33,8 @@ struct File {
     bind: toml::Table,
     #[serde(default)]
     links: toml::Table,
+    #[serde(default)]
+    widgets: toml::Table,
 }
 
 impl Config {
@@ -57,7 +61,8 @@ impl Config {
             }
             links.push((word.to_lowercase(), address.to_string()));
         }
-        Ok((Config { bindings, timeout, links }, tree))
+        let widgets = crate::widgets::from_settings(&file.widgets)?;
+        Ok((Config { bindings, timeout, links, widgets }, tree))
     }
 }
 

@@ -92,6 +92,8 @@ pub fn run(options: Options) -> ! {
     }
     // What is copied is kept, for the box to list.
     crate::clip::watch();
+    // And each widget is run when it is due, for the box to show.
+    crate::widgets::keep_fresh();
     let watch = Watch::new(&[
         (Path::new(INPUT), libc::IN_CREATE | libc::IN_DELETE | libc::IN_ATTRIB),
         (

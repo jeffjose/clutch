@@ -9,6 +9,7 @@ mod keys;
 mod palette;
 mod setup;
 mod style;
+mod widgets;
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;

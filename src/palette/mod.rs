@@ -175,6 +175,8 @@ enum Hit {
     Mute,
     Nudge(i32),
     Volume(u32),
+    /// A widget's tile, by its place among them.
+    Widget(usize),
 }
 
 /// A measure drawn on a row: how strong a network is, out of 100, or how
@@ -234,6 +236,8 @@ enum Action {
     StopTimer(timers::Timer),
     /// Put a copy back on the clipboard and paste it into the window before.
     Paste(PathBuf),
+    /// A line you typed, for your own shell to run.
+    Typed(String),
     /// Type this into the box, in place of what is there.
     Type(String),
 }
@@ -536,7 +540,7 @@ impl Stock {
         };
         let shell = |line: &str| {
             let line = line.trim();
-            Item::new(glyph::TERMINAL, line, "", "shell", Action::Shell(line.into()))
+            Item::new(glyph::TERMINAL, line, "", "shell", Action::Typed(line.into()))
         };
         match mode {
             Mode::Windows => pick(&self.windows),
@@ -664,13 +668,48 @@ impl Stock {
 }
 
 /// Start something and leave it running after the box has gone.
+///
+/// It is started with your shell's environment, not clutch's: clutch is
+/// started by systemd, whose PATH is short, and what is started from the
+/// box (an editor, a terminal) would otherwise go without what your
+/// shell sets up, mise's tools say.
 fn spawn(line: &str) {
     let mut command = Command::new("/bin/sh");
-    command.arg("-c").arg(config::with_clutch(line)).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
+    command.arg("-c").arg(config::with_clutch(line));
+    start(command);
+}
+
+/// A line you typed, run by your own shell, so that its aliases are there.
+fn spawn_typed(line: &str) {
+    let mut command = Command::new(login_shell());
+    command.arg("-c").arg(line);
+    start(command);
+}
+
+fn start(mut command: Command) {
+    command.envs(login_env().iter().cloned()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
     if let Some(home) = env::var_os("HOME") {
         command.current_dir(home);
     }
     let _ = command.spawn();
+}
+
+/// The shell you log in with, as the system's list of users has it.
+fn login_shell() -> String {
+    let entry = unsafe { libc::getpwuid(libc::getuid()) };
+    let shell = (!entry.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr((*entry).pw_shell) }.to_string_lossy().into_owned());
+    shell.filter(|shell| !shell.is_empty()).unwrap_or_else(|| "/bin/sh".to_string())
+}
+
+/// The environment your shell sets up, asked of it once: what it prints
+/// for `env`. Nothing, where it does not answer.
+fn login_env() -> &'static [(String, String)] {
+    static ENV: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    ENV.get_or_init(|| {
+        let output = Command::new(login_shell()).args(["-c", "env"]).stdin(Stdio::null()).stderr(Stdio::null()).output();
+        let printed = output.ok().filter(|output| output.status.success()).map(|output| String::from_utf8_lossy(&output.stdout).into_owned()).unwrap_or_default();
+        printed.lines().filter_map(|line| line.split_once('=')).filter(|(name, _)| !name.is_empty() && !name.contains(' ')).map(|(name, value)| (name.to_string(), value.to_string())).collect()
+    })
 }
 
 /// What a row is, in a word, for the foot of the box.
@@ -684,7 +723,7 @@ fn kind_said(item: &Item) -> &'static str {
         (Action::Copy(_), _, Gauge::Sum) => "sum",
         (Action::Timer(..) | Action::StopTimer(_), ..) => "timer",
         (Action::Shell(line), ..) if line.starts_with("xdg-open ") => "link",
-        (Action::Shell(_), ..) => "command",
+        (Action::Shell(_) | Action::Typed(_), ..) => "command",
         (Action::Deed(_) | Action::Open(_), ..) => "control",
         (Action::Workspace(_), ..) => "workspace",
         _ => "action",
@@ -697,7 +736,7 @@ fn main_said(item: &Item) -> &'static str {
         Action::Activate(_) => "Go to it",
         Action::Launch { .. } | Action::Open(_) => "Open",
         Action::Shell(line) if line.starts_with("xdg-open ") => "Open",
-        Action::Shell(_) => "Run",
+        Action::Shell(_) | Action::Typed(_) => "Run",
         Action::Copy(_) | Action::Restore(_) => "Copy",
         Action::Timer(..) => "Start",
         Action::StopTimer(_) => "Stop",
@@ -755,6 +794,7 @@ fn shell_quoted(text: &str) -> String {
 fn perform(action: &Action, desk: Option<&Desk>) {
     match (action, desk) {
         (Action::Launch { exec, terminal: false }, _) | (Action::Shell(exec), _) => spawn(exec),
+        (Action::Typed(line), _) => spawn_typed(line),
         (Action::Launch { exec, terminal: true }, _) => spawn(&format!("x-terminal-emulator -e sh -c {}", shell_quoted(exec))),
         (Action::EditSettings, _) => spawn(&format!("xdg-open {}", shell_quoted(&config::path().to_string_lossy()))),
         (Action::Clutch(what), _) => drop(crate::ask(what)),
@@ -877,6 +917,8 @@ struct Palette {
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
     /// The controls that are tiles, here.
     shown: Vec<usize>,
+    /// The widgets in the settings, and what each last showed, if anything.
+    widgets: Vec<(crate::widgets::Widget, Option<crate::widgets::Tile>)>,
     /// What git said of each project's folder, once asked: its last commit and what has changed.
     git: std::cell::RefCell<HashMap<String, (Option<String>, Vec<String>)>>,
 }
@@ -1015,14 +1057,61 @@ impl Palette {
         let small: Vec<usize> = self.shown.iter().copied().filter(|shown| *shown != controls::SOUND).collect();
         let (tile_width, tile_height) = ((side - 3 * gap) / 2, 2 * line + pad * 3 / 2);
         let small_top = bar_top - small.len().div_ceil(2) as i32 * (tile_height + gap);
+        // The widgets, each across the column, between sound and those.
+        let widgets_top = small_top - self.widgets.len() as i32 * (self.widget_height() + gap);
         if at == controls::SOUND {
-            return (width + gap, head + gap, side - 2 * gap, small_top - gap - head - gap);
+            return (width + gap, head + gap, side - 2 * gap, widgets_top - gap - head - gap);
         }
         let Some(place) = small.iter().position(|shown| *shown == at) else { return (0, 0, 0, 0) };
         // One alone in its row is as wide as two.
         let alone = place == small.len() - 1 && small.len() % 2 == 1;
         let wide = if alone { side - 2 * gap } else { tile_width };
         (width + gap + (place % 2) as i32 * (tile_width + gap), small_top + (place / 2) as i32 * (tile_height + gap), wide, tile_height)
+    }
+
+    /// How tall a widget's tile is: its title and value, a bar, and a line.
+    fn widget_height(&self) -> i32 {
+        let Layout { px, pad, line, .. } = self.layout;
+        pad / 2 + line + pad / 3 + (pad / 3).max(4) + pad / 3 + Text::line_height(px * 5 / 6) + pad / 2
+    }
+
+    /// Where a widget's tile is: under Sound, the first highest.
+    fn widget_area(&self, at: usize) -> (i32, i32, i32, i32) {
+        let (left, top, wide, tall) = self.control_area(controls::SOUND);
+        let gap = self.layout.pad / 2;
+        (left, top + tall + gap + at as i32 * (self.widget_height() + gap), wide, self.widget_height())
+    }
+
+    /// A widget's tile: its title and its value across the top, a bar
+    /// with the tick of where it should be, and a line. Tinted amber when
+    /// its settings say to watch it, and red when it is wrong.
+    fn draw_widget(&mut self, canvas: &mut Canvas, at: usize) {
+        let Layout { px, pad, line, .. } = self.layout;
+        let small = px * 5 / 6;
+        let (left, top, wide, tall) = self.widget_area(at);
+        let tile = self.widgets[at].1.clone().unwrap_or_else(|| crate::widgets::Tile { title: self.widgets[at].0.title.clone(), line: "\u{2026}".into(), ..Default::default() });
+        let tone = [0x1FBF83, 0xFFB020, 0xFF6652][tile.tone.min(2) as usize];
+        let ground = if tile.tone == 0 { WELL_COLOR } else { canvas::mix(WELL_COLOR, tone, 45) };
+        let ground = if self.hover == Some(Hit::Widget(at)) { canvas::mix(ground, TEXT_COLOR, 30) } else { ground };
+        canvas.round_fill(left, top, wide, tall, pad / 2, ground, 256);
+        let inset = pad * 2 / 3;
+        let value_wide = self.text.width(&tile.value, px);
+        let title = self.text.clipped(&tile.title, wide - 2 * inset - value_wide - pad, px);
+        self.text.draw(canvas, left + inset, top + pad / 2, px, TEXT_COLOR, &title);
+        self.text.draw(canvas, left + wide - inset - value_wide, top + pad / 2, px, TEXT_COLOR, &tile.value);
+        // The bar, and across it the tick of where it should be by now.
+        let thick = (pad / 3).max(4);
+        let bar_top = top + pad / 2 + line + pad / 3;
+        let long = wide - 2 * inset;
+        if let Some(full) = tile.bar {
+            canvas.round_fill(left + inset, bar_top, long, thick, thick / 2, canvas::mix(ground, 0x000000, 80), 256);
+            canvas.round_fill(left + inset, bar_top, (long as f64 * full) as i32, thick, thick / 2, tone, 256);
+        }
+        if let Some(mark) = tile.mark {
+            canvas.fill(left + inset + (long as f64 * mark) as i32 - 1, bar_top - thick / 2 - 1, 2, thick * 2 + 2, TEXT_COLOR);
+        }
+        let said = self.text.clipped(&tile.line, long, small);
+        self.text.draw(canvas, left + inset, bar_top + thick + pad / 3, small, DIM_TEXT_COLOR, &said);
     }
 
     /// The Sound tile's buttons, along its foot: mute, quieter, and
@@ -1370,6 +1459,9 @@ impl Palette {
         let on_bar = within(self.player_bar()).then_some(controls::PLAY);
         // A preview in their place has nothing to click.
         if !self.previewing() {
+            if let Some(at) = (0..self.widgets.len()).find(|at| within(self.widget_area(*at))) {
+                return Some(Hit::Widget(at));
+            }
             if let Some((hit, _)) = self.sound_buttons().into_iter().find(|(_, area)| within(*area)) {
                 return Some(hit);
             }
@@ -1434,6 +1526,17 @@ impl Palette {
         match self.hover {
             Some(Hit::Back) => self.back(),
             Some(Hit::Mute) => self.controls.act(Deed::Flip(controls::SOUND)),
+            // A widget runs what its settings say a click on it should, and the box goes.
+            Some(Hit::Widget(at)) => {
+                let open = self.widgets[at].0.open.clone();
+                if !open.is_empty() {
+                    if let Some(window) = &self.window {
+                        window.set_visible(false);
+                    }
+                    spawn(&open);
+                    return event_loop.exit();
+                }
+            }
             Some(Hit::Nudge(by)) => self.nudge_volume(by),
             Some(Hit::Volume(level)) => {
                 let device = self.controls.devices.iter().find(|device| device.used && !device.input).cloned();
@@ -1923,7 +2026,12 @@ impl Palette {
         }
         match previewing {
             true => self.draw_preview(&mut canvas),
-            false => self.draw_player(&mut canvas, lit_up),
+            false => {
+                self.draw_player(&mut canvas, lit_up);
+                for at in 0..self.widgets.len() {
+                    self.draw_widget(&mut canvas, at);
+                }
+            }
         }
 
         let mut at = left;
@@ -2261,6 +2369,16 @@ impl ApplicationHandler for Palette {
     /// The controls have something new to say.
     fn user_event(&mut self, _: &ActiveEventLoop, _: ()) {
         self.picture_chosen();
+        // A widget that was run may have something new to show.
+        for (widget, tile) in self.widgets.iter_mut() {
+            let fresh = crate::widgets::last(widget).map(|(printed, _)| crate::widgets::tile(widget, &printed));
+            if fresh.is_some() && fresh != *tile {
+                *tile = fresh;
+            }
+        }
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
         if self.controls.take() {
             self.heard();
             self.pointed();
@@ -2338,7 +2456,16 @@ impl Palette {
             wake: None,
             git: Default::default(),
             shown: controls::shown(),
+            widgets: Vec::new(),
         };
+        // The widgets, as they last were: what the running clutch keeps.
+        let settings = fs::read_to_string(config::path()).unwrap_or_default();
+        if let Ok((settings, _)) = Config::parse(&settings) {
+            palette.widgets = settings.widgets.into_iter().map(|widget| {
+                let tile = crate::widgets::last(&widget).map(|(printed, _)| crate::widgets::tile(&widget, &printed));
+                (widget, tile)
+            }).collect();
+        }
         palette.typed_changed();
         palette
     }
@@ -2373,6 +2500,18 @@ pub fn run(typed: &str) -> Result<(), String> {
     palette.wake = Some(Arc::new(move || {
         let _ = wake.send_event(());
     }));
+    // A widget whose output is old, the running clutch not having run it,
+    // is run now, without waiting for it: it is drawn again when it answers.
+    for (widget, _) in palette.widgets.iter().filter(|(widget, _)| crate::widgets::due(widget)) {
+        let (widget, wake) = (widget.clone(), palette.wake.clone());
+        thread::spawn(move || {
+            if crate::widgets::refresh(&widget) {
+                if let Some(wake) = wake {
+                    wake();
+                }
+            }
+        });
+    }
     palette.controls.start(move || {
         let _ = proxy.send_event(());
     });
@@ -2502,7 +2641,7 @@ mod tests {
     #[test]
     fn what_matches_nothing_can_still_be_run() {
         let found = stock().matching("htop");
-        assert!(matches!(&found[0].action, Action::Shell(line) if line == "htop"));
+        assert!(matches!(&found[0].action, Action::Typed(line) if line == "htop"));
         // And, where there is somewhere projects are kept, a new project of that name.
         assert!(found.iter().skip(1).all(|item| item.title == "New project htop"));
     }

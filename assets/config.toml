@@ -57,3 +57,20 @@ yt = "https://www.youtube.com/results?search_query={}"
 # claude = "https://claude.ai/new?q={}"
 # mail = "https://mail.google.com"
 # cal = "https://calendar.google.com"
+
+# Widgets: a program's output, as a tile beside the list. clutch runs it
+# every so many seconds and keeps what it printed, so the box shows it at
+# once. The tile is the same for all: a title and a value, a bar with a
+# tick, and a line. Each is filled from what the program prints: {field}
+# is a field of its JSON ({field:.1} to one place, {field:+.1} with a
+# sign), or of plain text {text}, {line1}, {line2}…
+# [widgets.disk]
+# run = "df --output=pcent / | tail -1"
+# every = 300
+# title = "Disk"
+# value = "{text}"
+# bar = "text"              # how full, out of max (100 unless it says)
+# line = "of /"
+# warn = "text > 80"        # amber, when this holds
+# bad = "text > 95"         # red
+# open = "xdg-open ~"       # what a click runs
