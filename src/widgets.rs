@@ -97,14 +97,45 @@ pub fn last(widget: &Widget) -> Option<(String, u64)> {
     Some((fs::read_to_string(path).ok()?, age))
 }
 
-/// Whether it is time it was run again.
+/// Where it is kept when it was last run, and how many times running it
+/// has failed since it last went well: written as it is started, so that
+/// clutch and the box do not both run it, and a failure waits as a success does.
+fn asked(widget: &Widget) -> PathBuf {
+    folder().join(format!("{}.asked", widget.name))
+}
+
+/// Whether it is time it was run again: `every` seconds after it was
+/// last run, and after failures twice as long for each, up to half an
+/// hour. What it asks of may be refusing it for being asked too often.
 pub fn due(widget: &Widget) -> bool {
-    last(widget).is_none_or(|(_, age)| age >= widget.every)
+    let path = asked(widget);
+    let Some(since) = fs::metadata(&path).ok().and_then(|kept| kept.modified().ok()?.elapsed().ok()) else {
+        return last(widget).is_none_or(|(_, age)| age >= widget.every);
+    };
+    let failed: u32 = fs::read_to_string(&path).ok().and_then(|said| said.trim().parse().ok()).unwrap_or(0);
+    since.as_secs() >= backoff(widget.every, failed)
+}
+
+const LONGEST_WAIT: u64 = 30 * 60;
+
+fn backoff(every: u64, failed: u32) -> u64 {
+    every.saturating_mul(1 << failed.min(16)).min(LONGEST_WAIT.max(every))
 }
 
 /// Run it, and keep what it prints if it says it went well. Not for
 /// longer than `LONGEST`: then it is stopped, and what was kept stays.
 pub fn refresh(widget: &Widget) -> bool {
+    let path = asked(widget);
+    let failed: u32 = fs::read_to_string(&path).ok().and_then(|said| said.trim().parse().ok()).unwrap_or(0);
+    let _ = fs::create_dir_all(folder());
+    let _ = fs::write(&path, failed.to_string());
+    let went = run(widget);
+    // (Written again, so that the wait is from when it ended.)
+    let _ = fs::write(&path, if went { "0".to_string() } else { (failed + 1).to_string() });
+    went
+}
+
+fn run(widget: &Widget) -> bool {
     let child = Command::new("/bin/sh")
         .arg("-c")
         .arg(crate::config::with_clutch(&widget.run))
@@ -269,6 +300,16 @@ fn said(value: Option<&Value>, format: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failures_wait_longer() {
+        assert_eq!(backoff(60, 0), 60);
+        assert_eq!(backoff(60, 1), 120);
+        assert_eq!(backoff(60, 3), 480);
+        assert_eq!(backoff(60, 40), 30 * 60);
+        // A widget run less often than that is not run more often for failing.
+        assert_eq!(backoff(3600, 2), 3600);
+    }
 
     fn claude() -> Widget {
         let settings: toml::Table = toml::from_str(
