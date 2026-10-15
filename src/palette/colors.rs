@@ -79,6 +79,26 @@ pub fn oklch(color: u32) -> (f64, f64, f64) {
     (lightness, chroma, hue)
 }
 
+/// What a shade is for, where its palette says: Radix gives each of its
+/// twelve steps a use, from the app's background to high-contrast text.
+pub fn use_of(palette: usize, shade: usize) -> Option<&'static str> {
+    const RADIX: [&str; 12] = [
+        "App background",
+        "Subtle background",
+        "Element background",
+        "Hovered element",
+        "Active element",
+        "Subtle border",
+        "Element border",
+        "Hovered border",
+        "Solid",
+        "Hovered solid",
+        "Low-contrast text",
+        "High-contrast text",
+    ];
+    (all()[palette].id == "radix").then(|| RADIX.get(shade).copied()).flatten()
+}
+
 /// The ways a color can be copied, each with what it is called: the
 /// hex first, which is what Enter copies.
 pub fn formats(palette: usize, hue: usize, shade: usize) -> Vec<(&'static str, String)> {
@@ -197,6 +217,10 @@ mod tests {
         assert_eq!(name_of(palette, hue, shade), "blue-500");
         assert_eq!(named("blue 9").len(), 1);
         assert!(named("blue").is_empty());
+        // Radix's steps each have a use; Tailwind's shades none.
+        let (radix, _, nine) = named("blue-9")[0];
+        assert_eq!(use_of(radix, nine), Some("Solid"));
+        assert_eq!(use_of(0, 5), None);
     }
 
     #[test]
