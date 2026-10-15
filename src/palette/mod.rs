@@ -1334,8 +1334,17 @@ impl Palette {
         if let Some(mark) = tile.mark {
             canvas.fill(left + inset + (long as f64 * mark) as i32 - 1, bar_top - thick / 2 - 1, 2, thick * 2 + 2, TEXT_COLOR);
         }
-        let said = self.text.clipped(&tile.line, long, small);
-        self.text.draw(canvas, left + inset, bar_top + thick + pad / 3, small, DIM_TEXT_COLOR, &said);
+        // How old what it shows is, small in the corner: the line leaves it room.
+        let tiny = px * 2 / 3;
+        let line_top = bar_top + thick + pad / 3;
+        let age = tile.at.map_or(String::new(), crate::widgets::ago);
+        let age_wide = if age.is_empty() { 0 } else { self.text.width(&age, tiny) + pad / 2 };
+        if !age.is_empty() {
+            let foot = line_top + Text::line_height(small);
+            self.text.draw(canvas, left + wide - inset - (age_wide - pad / 2), foot - Text::line_height(tiny), tiny, canvas::mix(ground, DIM_TEXT_COLOR, 190), &age);
+        }
+        let said = self.text.clipped(&tile.line, long - age_wide, small);
+        self.text.draw(canvas, left + inset, line_top, small, DIM_TEXT_COLOR, &said);
     }
 
     /// The Sound tile's buttons, along its foot: mute, quieter, and
@@ -1453,8 +1462,9 @@ impl Palette {
         let line = |name: &str, said: String| (name.to_string(), said);
         match (&item.action, &item.gauge, &item.picture) {
             (_, _, Picture::Color(palette, hue, shade)) => {
+                let used = colors::use_of(*palette, *shade).map(|used| line("Use", used.to_string()));
                 let lines = colors::formats(*palette, *hue, *shade).into_iter().map(|(name, said)| line(&format!("{}{}", name[..1].to_uppercase(), &name[1..]), said));
-                Some((None, format!("{} \u{b7} {}", item.title, item.detail), lines.collect()))
+                Some((None, format!("{} \u{b7} {}", item.title, item.detail), used.into_iter().chain(lines).collect()))
             }
             (Action::CopyIcon(name), ..) => {
                 let set = name.split_once(':').map_or("", |(set, _)| set);
@@ -2759,7 +2769,7 @@ impl ApplicationHandler for Palette {
         }
         // A widget that was run may have something new to show.
         for (widget, tile) in self.widgets.iter_mut() {
-            let fresh = crate::widgets::last(widget).map(|(printed, _)| crate::widgets::tile(widget, &printed));
+            let fresh = crate::widgets::shown(widget);
             if fresh.is_some() && fresh != *tile {
                 *tile = fresh;
             }
@@ -2854,7 +2864,7 @@ impl Palette {
         {
             let widgets = std::mem::take(&mut palette.stock.widgets);
             palette.widgets = widgets.into_iter().map(|widget| {
-                let tile = crate::widgets::last(&widget).map(|(printed, _)| crate::widgets::tile(&widget, &printed));
+                let tile = crate::widgets::shown(&widget);
                 (widget, tile)
             }).collect();
             crate::timing::mark("widgets");

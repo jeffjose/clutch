@@ -194,6 +194,61 @@ pub struct Tile {
     pub line: String,
     /// 0 as it should be, 1 to be watched, 2 wrong.
     pub tone: u8,
+    /// When what it shows is from, in seconds since 1970: when the widget
+    /// says it fetched it (`fetched_at`), or else when it was last run.
+    pub at: Option<u64>,
+}
+
+/// A widget's tile as it last printed, if it has.
+pub fn shown(widget: &Widget) -> Option<Tile> {
+    let (printed, age) = last(widget)?;
+    let mut tile = tile(widget, &printed);
+    tile.at = tile.at.or_else(|| Some(now().saturating_sub(age)));
+    Some(tile)
+}
+
+fn now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs())
+}
+
+/// How long ago, in a few letters: "now", "4 min ago", "2 h ago".
+pub fn ago(at: u64) -> String {
+    match now().saturating_sub(at) {
+        ..60 => "now".to_string(),
+        seconds @ ..3600 => format!("{} min ago", seconds / 60),
+        seconds @ ..86400 => format!("{} h ago", seconds / 3600),
+        seconds => format!("{} days ago", seconds / 86400),
+    }
+}
+
+/// A time as a widget may print it: seconds since 1970, or as
+/// "2026-10-14T23:44:47.66-07:00", which must say its zone.
+fn time_of(value: &Value) -> Option<u64> {
+    if let Some(seconds) = value.as_f64() {
+        return Some(seconds as u64);
+    }
+    let text = value.as_str()?.trim();
+    let (date, rest) = text.split_once('T')?;
+    let mut parts = date.split('-').map(|part| part.parse::<i64>().ok());
+    let (year, month, day) = (parts.next()??, parts.next()??, parts.next()??);
+    let zone_at = rest.find(['+', '-', 'Z'])?;
+    let (clock, zone) = rest.split_at(zone_at);
+    let mut parts = clock.split(':');
+    let (hour, minute, second) = (parts.next()?.parse::<i64>().ok()?, parts.next()?.parse::<i64>().ok()?, parts.next().map_or(Some(0.0), |s| s.parse::<f64>().ok())?);
+    let offset = match zone {
+        "Z" => 0,
+        zone => {
+            let sign = if zone.starts_with('-') { -1 } else { 1 };
+            let (hours, minutes) = zone[1..].split_once(':').unwrap_or((&zone[1..], "0"));
+            sign * (hours.parse::<i64>().ok()? * 3600 + minutes.parse::<i64>().ok()? * 60)
+        }
+    };
+    // Days since 1970 of a date, as the calendar goes back from March.
+    let (y, m) = if month <= 2 { (year - 1, month + 9) } else { (year, month - 3) };
+    let era = y.div_euclid(400);
+    let of_era = y - era * 400;
+    let days = era * 146097 + of_era * 365 + of_era / 4 - of_era / 100 + (153 * m + 2) / 5 + day - 1 - 719468;
+    u64::try_from(days * 86400 + hour * 3600 + minute * 60 + second as i64 - offset).ok()
 }
 
 /// Fill a widget's places from what it printed: JSON, whose fields the
@@ -209,7 +264,7 @@ pub fn tile(widget: &Widget, printed: &str) -> Tile {
     });
     let fraction = |path: &str| (!path.is_empty()).then(|| number(&data, path)).flatten().map(|n| (n / widget.max.max(f64::MIN_POSITIVE)).clamp(0.0, 1.0));
     let tone = if truth(&data, &widget.bad) { 2 } else if truth(&data, &widget.warn) { 1 } else { 0 };
-    Tile { title: fill(&widget.title, &data), value: fill(&widget.value, &data), bar: fraction(&widget.bar), mark: fraction(&widget.mark), line: fill(&widget.line, &data), tone }
+    Tile { title: fill(&widget.title, &data), value: fill(&widget.value, &data), bar: fraction(&widget.bar), mark: fraction(&widget.mark), line: fill(&widget.line, &data), tone, at: data.get("fetched_at").and_then(time_of) }
 }
 
 /// The field a path names: "used", "speed.0.speed".
@@ -300,6 +355,15 @@ fn said(value: Option<&Value>, format: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn when_it_was_fetched() {
+        assert_eq!(time_of(&serde_json::json!("1970-01-02T00:00:00Z")), Some(86400));
+        assert_eq!(time_of(&serde_json::json!("2026-10-14T23:44:47.663003-07:00")), Some(1792046687));
+        assert_eq!(time_of(&serde_json::json!(1792046687)), Some(1792046687));
+        // With no zone, it could be any time.
+        assert_eq!(time_of(&serde_json::json!("2026-10-14T23:44:47")), None);
+    }
 
     #[test]
     fn failures_wait_longer() {
