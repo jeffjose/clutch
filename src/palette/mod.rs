@@ -11,7 +11,9 @@ pub mod canvas;
 mod controls;
 mod dress;
 mod calc;
+mod colors;
 mod emoji;
+mod iconify;
 mod timers;
 mod field;
 mod looks;
@@ -115,6 +117,8 @@ enum Mode {
     Clipboard,
     /// `:` emoji, to copy.
     Emoji,
+    /// `*` icons, looked up on Iconify, to copy.
+    Icons,
 }
 
 impl Mode {
@@ -127,6 +131,7 @@ impl Mode {
             Some('!') => Mode::Shell,
             Some('"') => Mode::Clipboard,
             Some(':') => Mode::Emoji,
+            Some('*') => Mode::Icons,
             _ => return (Mode::Find, typed),
         };
         (mode, &typed[1..])
@@ -141,6 +146,7 @@ impl Mode {
             Mode::Shell => (glyph::TERMINAL, "Shell"),
             Mode::Clipboard => (glyph::CLIPBOARD, "Clipboard"),
             Mode::Emoji => (glyph::STAR, "Emoji"),
+            Mode::Icons => (glyph::APP, "Icons"),
         }
     }
 }
@@ -153,6 +159,8 @@ enum View {
     Sound,
     /// A project's look, being chosen.
     Look,
+    /// A palette's colors, to copy one.
+    Colors,
 }
 
 /// What the pointer is over.
@@ -207,6 +215,10 @@ enum Picture {
     /// A coding project's own, by its name and where it is kept.
     Project(String, Option<PathBuf>),
     Emoji(String),
+    /// An icon of Iconify's, by its full name: "lucide:house".
+    Iconify(String),
+    /// A color of a palette, by the palette, its hue and its shade.
+    Color(usize, usize, usize),
 }
 
 #[derive(Clone)]
@@ -242,6 +254,10 @@ enum Action {
     Typed(String),
     /// Type this into the box, in place of what is there.
     Type(String),
+    /// Put an icon on the clipboard, as a picture.
+    CopyIcon(String),
+    /// Show a palette's colors, by its place among them. The box stays up.
+    Colors(usize),
 }
 
 #[derive(Clone)]
@@ -499,6 +515,13 @@ impl Stock {
         };
         find_as("Clipboard", "copied paste history", "\"");
         find_as("Emoji", "smiley", ":");
+        find_as("Icons", "iconify svg symbols", "*");
+        // Each palette's colors, gone into as a control's insides are.
+        for (at, palette) in colors::all().iter().enumerate() {
+            let mut item = Item::new(glyph::STAR, &format!("{} colors", palette.name), "", "palette", Action::Colors(at));
+            item.find = format!("{} {} colors colours palette swatches", palette.name, palette.id);
+            stock.controls.push(item);
+        }
         let mut clutch = |glyph, name: &str, action| stock.commands.push(Item::new(glyph, name, "", "clutch", action));
         clutch(glyph::PENCIL, "Edit settings", Action::EditSettings);
         clutch(glyph::REFRESH, "Reload settings", Action::Clutch("reload"));
@@ -556,7 +579,13 @@ impl Stock {
         };
         match mode {
             Mode::Windows => pick(&self.windows),
-            Mode::Workspaces => pick(&self.workspaces),
+            // "#3b82f6" is no workspace's name: of each palette, the color nearest it.
+            Mode::Workspaces => match colors::parsed(typed) {
+                Some(color) => colors::nearest(color).into_iter().map(color_item).chain(pick(&self.workspaces)).collect(),
+                None => pick(&self.workspaces),
+            },
+            // The box looks them up, as they are not at hand.
+            Mode::Icons => Vec::new(),
             Mode::Run => pick(&self.commands),
             Mode::Shell if typed.trim().is_empty() => Vec::new(),
             Mode::Shell => vec![shell(typed)],
@@ -655,6 +684,8 @@ impl Stock {
                 if typed.trim().starts_with("timer") {
                     first.extend(self.timers());
                 }
+                // A color by its name, "blue-500", in each palette that has it.
+                first.extend(colors::named(typed).into_iter().map(color_item));
                 found.splice(0..0, first);
                 // Whatever else it is, it can be run.
                 if found.is_empty() {
@@ -677,6 +708,14 @@ impl Stock {
             }
         }
     }
+}
+
+/// A color of a palette, as a row or a cell: Enter copies its hex.
+fn color_item((palette, hue, shade): (usize, usize, usize)) -> Item {
+    let hex = colors::hex(colors::of(palette, hue, shade));
+    let mut item = Item::new(glyph::STAR, &colors::name_of(palette, hue, shade), &colors::all()[palette].name, &hex, Action::Copy(hex.clone()));
+    item.picture = Picture::Color(palette, hue, shade);
+    item
 }
 
 /// Start something and leave it running after the box has gone.
@@ -728,6 +767,8 @@ fn login_env() -> &'static [(String, String)] {
 fn kind_said(item: &Item) -> &'static str {
     match (&item.action, &item.picture, &item.gauge) {
         (_, Picture::Project(..), _) => "project",
+        (_, Picture::Color(..), _) => "color",
+        (Action::CopyIcon(_), ..) => "icon",
         (Action::Activate(_), ..) => "window",
         (Action::Launch { .. }, ..) => "application",
         (Action::Restore(_), ..) => "copied",
@@ -744,7 +785,12 @@ fn kind_said(item: &Item) -> &'static str {
 
 /// What Enter does to a row, in a few words.
 fn main_said(item: &Item) -> &'static str {
+    if let Picture::Color(..) = item.picture {
+        return "Copy hex";
+    }
     match &item.action {
+        Action::CopyIcon(_) => "Copy PNG",
+        Action::Colors(_) => "Open",
         Action::Activate(_) => "Go to it",
         Action::Launch { .. } | Action::Open(_) => "Open",
         Action::Shell(line) if line.starts_with("xdg-open ") => "Open",
@@ -812,6 +858,7 @@ fn perform(action: &Action, desk: Option<&Desk>) {
         (Action::Clutch(what), _) => drop(crate::ask(what)),
         (Action::ForgetPictures, _) => drop(fs::remove_dir_all(projects::kept_in())),
         (Action::Copy(text), _) => crate::clip::copy_text(text),
+        (Action::CopyIcon(name), _) => iconify::copy_png(name),
         (Action::Restore(copy), _) => crate::clip::restore(copy),
         (Action::Timer(seconds, label), _) => timers::start(*seconds, label),
         (Action::StopTimer(timer), _) => timers::stop(timer),
@@ -828,7 +875,7 @@ fn perform(action: &Action, desk: Option<&Desk>) {
         (Action::Fullscreen(window), Some(desk)) => desk.toggle_fullscreen(*window),
         (Action::Close(window), Some(desk)) => desk.close(*window),
         // Those the box stays up for are its own to do.
-        (Action::Open(_) | Action::Deed(_) | Action::Type(_), _) | (_, None) => {}
+        (Action::Open(_) | Action::Deed(_) | Action::Type(_) | Action::Colors(_), _) | (_, None) => {}
     }
 }
 
@@ -936,9 +983,152 @@ struct Palette {
     widgets: Vec<(crate::widgets::Widget, Option<crate::widgets::Tile>)>,
     /// What git said of each project's folder, once asked: its last commit and what has changed.
     git: std::cell::RefCell<HashMap<String, (Option<String>, Vec<String>)>>,
+    /// The icons looked up on Iconify, as `*` is typed.
+    lookup: iconify::Lookup,
+    /// The palette whose colors are shown, by its place among them.
+    colors: usize,
+}
+
+/// What is found, drawn as cells rather than rows: icons, colors. How
+/// many across, how large each is, and the room kept along the top and
+/// the left for what the columns and rows are.
+#[derive(Clone, Copy)]
+struct Grid {
+    across: usize,
+    wide: i32,
+    tall: i32,
+    top: i32,
+    left: i32,
 }
 
 impl Palette {
+    /// The grid what is found is drawn in, where it is one.
+    fn grid(&self) -> Option<Grid> {
+        let Layout { px, pad, row, width, .. } = self.layout;
+        let inside = width - pad;
+        match self.view {
+            View::Find if Mode::of(&self.field.string()).0 == Mode::Icons => {
+                let across = (inside / (row * 2)).max(1);
+                Some(Grid { across: across as usize, wide: inside / across, tall: row * 2, top: 0, left: 0 })
+            }
+            // A column for each hue, and a row for each shade, light at the top.
+            View::Colors => {
+                let shades = colors::all()[self.colors].shades.len();
+                let across = (self.found.len() / shades.max(1)).max(1);
+                let (top, left) = (Text::line_height(px * 2 / 3) + pad / 4, pad * 2);
+                let wide = ((inside - left) / across as i32).min(pad * 4);
+                Some(Grid { across, wide, tall: (ROWS as i32 * row - top) / shades.max(1) as i32, top, left })
+            }
+            _ => None,
+        }
+    }
+
+    /// Where a grid's first cell is, and how many of its rows are in view.
+    fn grid_at(&self, grid: Grid) -> (i32, i32, usize) {
+        let Layout { pad, head, row, .. } = self.layout;
+        (pad / 2 + grid.left, head + pad / 4 + grid.top, ((ROWS as i32 * row - grid.top) / grid.tall.max(1)).max(1) as usize)
+    }
+
+    /// What is found, in its cells: an icon drawn in the middle of its,
+    /// or a color filling its. The first row in view is `band`.
+    fn draw_grid(&mut self, canvas: &mut Canvas, grid: Grid) {
+        let Layout { px, pad, .. } = self.layout;
+        let (left, top, rows) = self.grid_at(grid);
+        let first = self.band * grid.across;
+        for at in (first..self.found.len()).take(rows * grid.across) {
+            let (x, y) = (left + ((at - first) % grid.across) as i32 * grid.wide, top + ((at - first) / grid.across) as i32 * grid.tall);
+            let (picked, pointed) = (at == self.selected && !self.beside, self.hover == Some(Hit::Item(at)));
+            let item = self.found[at].clone();
+            if let Picture::Color(palette, hue, shade) = item.picture {
+                // The one picked out has a ring round it, apart from it.
+                let gap = (pad / 8).max(1);
+                if picked || pointed {
+                    canvas.round_fill(x, y, grid.wide, grid.tall, pad / 3, if picked { TEXT_COLOR } else { DIM_TEXT_COLOR }, 256);
+                    canvas.round_fill(x + 2, y + 2, grid.wide - 4, grid.tall - 4, pad / 3 - 2, PANEL_COLOR, 256);
+                }
+                let inset = if picked || pointed { 2 + gap } else { gap };
+                canvas.round_fill(x + inset, y + inset, grid.wide - 2 * inset, grid.tall - 2 * inset, pad / 4, colors::of(palette, hue, shade), 256);
+                continue;
+            }
+            if picked || pointed {
+                canvas.round_fill(x + 2, y + 2, grid.wide - 4, grid.tall - 4, pad / 2, if picked { ACCENT } else { WELL_COLOR }, 256);
+            }
+            let side = grid.tall * 9 / 20;
+            if let Some(icon) = self.icon(&item, side as usize) {
+                canvas.icon(icon, x + (grid.wide - side) / 2, y + (grid.tall - side) / 2, side);
+            }
+        }
+        // The colors' hues across the top, and their shades down the left:
+        // those of the one picked out brighter.
+        if self.view == View::Colors {
+            let tiny = px * 2 / 3;
+            let palette = &colors::all()[self.colors];
+            let picked = self.found.get(self.selected).map(|item| item.picture.clone());
+            let (hue_now, shade_now) = match picked {
+                Some(Picture::Color(_, hue, shade)) => (hue, shade),
+                _ => (usize::MAX, usize::MAX),
+            };
+            for column in 0..grid.across {
+                let Some(Picture::Color(_, hue, _)) = self.found.get(column).map(|item| item.picture.clone()) else { continue };
+                let name = &palette.hues[hue].0;
+                // As much of its name as fits: "slate", or "sla".
+                let name = if self.text.width(name, tiny) <= grid.wide - 2 { name.clone() } else { name.chars().take(3).collect() };
+                let across = self.text.width(&name, tiny);
+                let x = left + column as i32 * grid.wide + (grid.wide - across) / 2;
+                self.text.draw(canvas, x, top - grid.top, tiny, if hue == hue_now { TEXT_COLOR } else { DIM_TEXT_COLOR }, &name);
+            }
+            for (shade, name) in palette.shades.iter().enumerate().take(rows) {
+                let across = self.text.width(name, tiny);
+                let y = top + shade as i32 * grid.tall + (grid.tall - Text::line_height(tiny)) / 2;
+                self.text.draw(canvas, left - pad / 3 - across, y, tiny, if shade == shade_now { TEXT_COLOR } else { DIM_TEXT_COLOR }, name);
+            }
+        }
+    }
+
+    /// Which cell of the grid a point is in.
+    fn grid_hit(&self, grid: Grid, x: i32, y: i32) -> Option<Hit> {
+        let (left, top, rows) = self.grid_at(grid);
+        if x < left || y < top {
+            return None;
+        }
+        let (column, down) = (((x - left) / grid.wide) as usize, ((y - top) / grid.tall) as usize);
+        let at = (self.band + down) * grid.across + column;
+        (column < grid.across && down < rows && at < self.found.len()).then_some(Hit::Item(at))
+    }
+
+    /// The icons found for what is typed after `*`, those that could be drawn.
+    fn icon_items(&self) -> Vec<Item> {
+        let Some(Ok(found)) = &self.lookup.shown else { return Vec::new() };
+        // Not those that move: as they first stand, they are mostly not drawn yet.
+        let still = |svg: &String| !svg.contains("<animate") && !svg.contains("<set ");
+        let drawn = found.names.iter().filter(|name| self.lookup.drawings.get(*name).is_some_and(still));
+        drawn
+            .map(|name| {
+                let (set, icon) = name.split_once(':').unwrap_or(("", name));
+                let set = found.sets.get(set).map_or(set, |known| known.name.as_str());
+                let mut item = Item::new(glyph::APP, icon, set, "", Action::CopyIcon(name.clone()));
+                item.picture = Picture::Iconify(name.clone());
+                item
+            })
+            .collect()
+    }
+
+    /// The colors of the palette shown, a row of them for each shade: of
+    /// the hues whose names have what is typed.
+    fn color_items(&self, typed: &str) -> Vec<Item> {
+        let palette = &colors::all()[self.colors];
+        let typed = typed.trim().to_lowercase();
+        let hues: Vec<usize> = (0..palette.hues.len()).filter(|hue| palette.hues[*hue].0.contains(&typed)).collect();
+        (0..palette.shades.len()).flat_map(|shade| hues.iter().map(move |hue| color_item((self.colors, *hue, shade)))).collect()
+    }
+
+    /// Show another palette's colors: the next, or with `back` the one before.
+    fn next_colors(&mut self, back: bool) {
+        let count = colors::all().len();
+        self.colors = (self.colors + if back { count - 1 } else { 1 }) % count;
+        self.typed_changed();
+    }
+
     /// What is behind a control, as rows: those that match what is typed.
     fn behind(&self, view: View, typed: &str) -> Vec<Item> {
         let mut items = Vec::new();
@@ -1223,6 +1413,10 @@ impl Palette {
     /// beside the list shows the one picked out, or pointed at, whole.
     fn previewing(&self) -> bool {
         let typed = self.field.string();
+        // Among the colors, the side is always the one picked out.
+        if self.view == View::Colors {
+            return true;
+        }
         if self.view != View::Find || typed.is_empty() {
             return false;
         }
@@ -1243,6 +1437,22 @@ impl Palette {
     fn card(&self, item: &Item) -> Option<(Option<String>, String, Vec<(String, String)>)> {
         let line = |name: &str, said: String| (name.to_string(), said);
         match (&item.action, &item.gauge, &item.picture) {
+            (_, _, Picture::Color(palette, hue, shade)) => {
+                let lines = colors::formats(*palette, *hue, *shade).into_iter().map(|(name, said)| line(&format!("{}{}", name[..1].to_uppercase(), &name[1..]), said));
+                Some((None, format!("{} \u{b7} {}", item.title, item.detail), lines.collect()))
+            }
+            (Action::CopyIcon(name), ..) => {
+                let set = name.split_once(':').map_or("", |(set, _)| set);
+                let known = match &self.lookup.shown {
+                    Some(Ok(found)) => found.sets.get(set).cloned().unwrap_or_default(),
+                    _ => Default::default(),
+                };
+                let mut lines = vec![line("Set", known.name), line("Name", name.clone())];
+                if !known.license.is_empty() {
+                    lines.push(line("License", known.license));
+                }
+                Some((None, item.title.clone(), lines))
+            }
             (Action::Copy(answer), Gauge::Sum, _) => {
                 let mut lines = vec![line("Sum", item.detail.clone())];
                 // A whole number, as a programmer may want it too.
@@ -1319,7 +1529,16 @@ impl Palette {
         if let Some(item) = self.found.get(at).cloned() {
             if let Some((large, title, lines)) = self.card(&item) {
                 let mut y = top;
-                let art = self.layout.row * 2;
+                // An icon or a color is what the card is for: large.
+                let art = match item.picture {
+                    Picture::Iconify(_) => (wide / 2).min(tall / 2),
+                    _ => self.layout.row * 2,
+                };
+                if let Picture::Color(palette, hue, shade) = item.picture {
+                    let tall = self.layout.row * 3;
+                    canvas.round_fill(left, y, wide, tall, pad / 2, colors::of(palette, hue, shade), 256);
+                    y += tall + pad * 3 / 4;
+                }
                 if let Some(icon) = self.icon(&item, art as usize) {
                     canvas.icon(icon, left, y, art);
                     y += art + pad / 2;
@@ -1524,6 +1743,9 @@ impl Palette {
         if x >= width - pad / 2 || x < pad / 2 || y < head + pad / 4 {
             return None;
         }
+        if let Some(grid) = self.grid() {
+            return self.grid_hit(grid, x, y);
+        }
         // The projects' tiles, then the rows under them: as they are drawn.
         let (bands, rows) = self.room();
         let (tile_width, tile_height) = ((width - pad) / COLUMNS as i32, self.layout.tile());
@@ -1642,7 +1864,13 @@ impl Palette {
     fn typed_changed(&mut self) {
         let typed = self.field.string();
         self.found = match self.view {
+            // Icons are asked for; until the answer comes, those of the last are shown.
+            View::Find if Mode::of(&typed).0 == Mode::Icons => {
+                self.lookup.ask(Mode::of(&typed).1);
+                self.icon_items()
+            }
             View::Find => self.stock.matching(&typed),
+            View::Colors => self.color_items(&typed),
             // A look being chosen has no rows: what is typed finds drawings.
             View::Look => {
                 self.editing_typed();
@@ -1658,6 +1886,10 @@ impl Palette {
             let recent = |item: &Item| matches!(item.action, Action::Activate(id) if Some(id) == self.stock.recent);
             self.select(self.found.iter().position(recent).unwrap_or(0));
         }
+        // Among the colors, the first hue at the palette's main shade: Tailwind's 500.
+        if let (View::Colors, Some(grid)) = (self.view, self.grid()) {
+            self.select(colors::all()[self.colors].main * grid.across);
+        }
     }
 
     /// How many bands of tiles are in view, and how many rows fit under them.
@@ -1670,6 +1902,13 @@ impl Palette {
 
     fn select(&mut self, to: usize) {
         self.selected = to.min(self.found.len().saturating_sub(1));
+        // In a grid, its row into view.
+        if let Some(grid) = self.grid() {
+            let (_, _, rows) = self.grid_at(grid);
+            let down = self.selected / grid.across;
+            self.band = self.band.clamp((down + 1).saturating_sub(rows), down);
+            return;
+        }
         let (bands, rows) = self.room();
         if self.selected < self.tiles {
             // Its band of tiles into view.
@@ -1691,6 +1930,14 @@ impl Palette {
     /// last band down is the first row under them.
     fn step_down(&mut self, down: bool) {
         let (at, tiles, count) = (self.selected, self.tiles, self.found.len());
+        // In a grid, a row: off its ends is nowhere.
+        if let Some(Grid { across, .. }) = self.grid() {
+            let to = if down { at + across } else { at.wrapping_sub(across) };
+            if to < count {
+                self.select(to);
+            }
+            return;
+        }
         let to = match (at < tiles, down) {
             (true, true) if at + COLUMNS < tiles => at + COLUMNS,
             // Onto the last band where it is short, or off the tiles.
@@ -1721,6 +1968,10 @@ impl Palette {
         // A control is flipped, or looked into, with the box still up.
         match self.found.get(at).map(|item| item.action.clone()) {
             Some(Action::Open(view)) => return self.open(view),
+            Some(Action::Colors(at)) => {
+                self.colors = at;
+                return self.open(View::Colors);
+            }
             Some(Action::Deed(deed)) => return self.controls.act(deed),
             // What it stands for is typed: the clipboard's history, the emoji.
             Some(Action::Type(typed)) => {
@@ -1752,14 +2003,16 @@ impl Palette {
             _ => Look::default(),
         };
         let key = match &item.picture {
-            Picture::None => return None,
+            Picture::None | Picture::Color(..) => return None,
+            Picture::Iconify(name) => format!("iconify {name} {size}"),
             Picture::Window(id) => format!("window {id}"),
             Picture::Named(name) => name.clone(),
             Picture::Project(name, folder) => format!("project {name} {folder:?} {}", look.said()),
             Picture::Emoji(text) => format!("emoji {text} {size}"),
         };
-        let desk = self.desk.as_ref();
+        let (desk, drawings) = (self.desk.as_ref(), &self.lookup.drawings);
         let fetch = || match &item.picture {
+            Picture::Iconify(name) => drawings.get(name).and_then(|svg| iconify::render(svg, TEXT_COLOR, size.max(1))),
             // A window that brings no icon may still be of a program
             // that has one.
             Picture::Window(id) => desk.and_then(|desk| desk.icon(*id, size)).or_else(|| apps::icon(&item.detail.to_lowercase())),
@@ -1767,7 +2020,7 @@ impl Palette {
             Picture::Project(name, folder) => projects::picture(name, folder.as_deref(), &look),
             // A copied picture, made small enough to sit in a row.
             Picture::Emoji(text) => emoji::picture(text).map(|picture| projects::fitted_to(&picture, size.max(1))),
-            Picture::None => None,
+            Picture::None | Picture::Color(..) => None,
         };
         self.icons.entry(key).or_insert_with(fetch).as_ref()
     }
@@ -1789,7 +2042,11 @@ impl Palette {
             View::Find => Mode::of(&typed),
             _ => (Mode::Find, ""),
         };
-        let (icon, label) = mode.label();
+        let (icon, label) = match mode {
+            // "#3b82f6" is a color, not a workspace.
+            Mode::Workspaces if colors::parsed(Mode::of(&typed).1).is_some() => (glyph::STAR, "Color"),
+            mode => mode.label(),
+        };
         let (left, top) = (pad * 3 / 2, pad);
         // Gone into something, the way back is a button where the search
         // was: an arrow and "Find", which is where it goes back to.
@@ -1810,6 +2067,7 @@ impl Palette {
             let within = match (self.view, &self.editing) {
                 (View::Wifi, _) => controls::NAMES[controls::WIFI].to_string(),
                 (View::Look, Some(editing)) => editing.target.name.clone(),
+                (View::Colors, _) => colors::all()[self.colors].name.clone(),
                 _ => controls::NAMES[controls::SOUND].to_string(),
             };
             let within = format!("{within} \u{203a}");
@@ -1889,7 +2147,12 @@ impl Palette {
         // the list is only where they will come back to.
         let pick = if self.beside { WELL_COLOR } else { ACCENT };
 
-        // The matches.
+        // The matches: in a grid, or as rows.
+        let grid = self.grid();
+        if let Some(grid) = grid {
+            self.draw_grid(&mut canvas, grid);
+        }
+        let rows = if grid.is_some() { 0 } else { rows };
         let picture = row - pad / 2;
         let first = self.first.max(self.tiles);
         for at in first..(first + rows).min(self.found.len()) {
@@ -1903,7 +2166,11 @@ impl Palette {
             }
             let (main, dim) = if picked && !self.beside { (ON_ACCENT, DIM_ON_ACCENT) } else { (TEXT_COLOR, DIM_TEXT_COLOR) };
             let text_top = row_top + (row - line) / 2;
+            if let Picture::Color(palette, hue, shade) = item.picture {
+                canvas.round_fill(left, row_top + (row - picture) / 2, picture, picture, picture / 4, colors::of(palette, hue, shade), 256);
+            }
             match (item.gauge, self.icon(&item, picture as usize)) {
+                (_, None) if matches!(item.picture, Picture::Color(..)) => {}
                 // How strong a network is: four bars, as many lit as it has.
                 (Gauge::Number(number), _) => {
                     let number = number.to_string();
@@ -1975,8 +2242,12 @@ impl Palette {
         if self.found.is_empty() {
             let asked = self.controls.tiles[if self.view == View::Wifi { controls::WIFI } else { controls::SOUND }].known;
             let nothing = match (mode, &self.desk) {
+                _ if self.view == View::Colors => "Nothing matches".to_string(),
                 _ if self.view != View::Find && !asked => "Looking\u{2026}".to_string(),
                 (Mode::Shell, _) => "Type a command".to_string(),
+                (Mode::Icons, _) if Mode::of(&typed).1.trim().is_empty() => "Type a word".to_string(),
+                (Mode::Icons, _) if self.lookup.looking() => "Looking\u{2026}".to_string(),
+                (Mode::Icons, _) if matches!(self.lookup.shown, Some(Err(_))) => "Offline".to_string(),
                 (Mode::Windows | Mode::Workspaces, None) => format!("Windows cannot be seen: {}", self.no_desk),
                 _ => "Nothing matches".to_string(),
             };
@@ -2105,9 +2376,10 @@ impl Palette {
             (_, View::Look) => vec![(named.as_str(), ""), ("Enter", "use"), ("Tab", "next row"), ("Ctrl+Tab", "drawings, emoji\u{2026}"), ("Esc", "back")],
             (_, View::Sound) if self.player().is_some() => vec![("Enter", "play or pause"), ("\u{2190} \u{2192}", "previous, next"), ("Tab", "controls"), ("Esc", "back")],
             (_, View::Sound) => vec![("\u{2190} \u{2192}", "quieter, louder"), ("Enter", "use this"), ("Ctrl+M", "mute"), ("Tab", "controls"), ("Esc", "back")],
+            (_, View::Colors) => vec![("Ctrl+Tab", "next palette"), ("Esc", "back")],
             // Searching, what is picked out is said, as an action bar does; with nothing typed, how to look for things.
             _ if !self.field.string().is_empty() => vec![(found_said.as_str(), "")],
-            _ => project.into_iter().chain([(">", "do"), ("@", "windows"), ("\"", "clipboard"), (":", "emoji"), ("!", "shell")]).collect(),
+            _ => project.into_iter().chain([(">", "do"), ("@", "windows"), ("\"", "clipboard"), (":", "emoji"), ("*", "icons"), ("!", "shell")]).collect(),
         };
         // At the right: what Enter does, and the way to the rest of what can be done.
         let text_top = foot_top + (self.layout.foot - Text::line_height(small)) / 2;
@@ -2211,6 +2483,18 @@ impl Palette {
         if self.view == View::Look && self.editor_key(key.clone(), arrow) {
             return;
         }
+        // In a grid, the arrows go across it and down it, and stop at its edges.
+        if let (Some(grid), Some((across, down)), false) = (self.grid(), arrow, self.beside) {
+            let to = self.selected as isize + across as isize + down as isize * grid.across as isize;
+            let same_row = down != 0 || to.div_euclid(grid.across as isize) == (self.selected / grid.across) as isize;
+            if (0..self.found.len() as isize).contains(&to) && same_row {
+                self.select(to as usize);
+            }
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+            return;
+        }
         let level = self.device().filter(|_| !self.beside);
         let player = self.player().filter(|_| !self.beside);
         match key {
@@ -2219,6 +2503,9 @@ impl Palette {
             // Backspace with nothing left to take out goes back too, as a path is gone up.
             Key::Named(NamedKey::Backspace) if self.view != View::Find && self.field.text.is_empty() => self.back(),
             Key::Named(NamedKey::Escape) => return event_loop.exit(),
+            Key::Named(NamedKey::Tab) if ctrl && self.view == View::Colors => self.next_colors(self.modifiers.shift_key()),
+            // Among the colors there are no controls to go to.
+            Key::Named(NamedKey::Tab) if self.view == View::Colors => {}
             Key::Named(NamedKey::Tab) => self.beside = !self.beside,
             // Among the controls: two across and three down. Off their
             // left is the list again.
@@ -2446,6 +2733,11 @@ impl ApplicationHandler for Palette {
     /// The controls have something new to say.
     fn user_event(&mut self, _: &ActiveEventLoop, _: ()) {
         self.picture_chosen();
+        // Icons have come for what is typed.
+        if self.lookup.take() {
+            self.typed_changed();
+            self.pointed();
+        }
         // A widget that was run may have something new to show.
         for (widget, tile) in self.widgets.iter_mut() {
             let fresh = crate::widgets::last(widget).map(|(printed, _)| crate::widgets::tile(widget, &printed));
@@ -2533,6 +2825,8 @@ impl Palette {
             chosen: None,
             wake: None,
             git: Default::default(),
+            lookup: iconify::Lookup::new(),
+            colors: 0,
             shown: controls::shown(),
             widgets: Vec::new(),
             took: None,
@@ -2547,6 +2841,13 @@ impl Palette {
             crate::timing::mark("widgets");
         }
         palette.typed_changed();
+        // Opened with a palette's name, the box opens on its colors:
+        // `clutch palette tailwind` can be bound to a key of its own.
+        let named = typed.trim().to_lowercase();
+        if let Some(at) = colors::all().iter().position(|palette| palette.id == named || (named == "colors" && palette.id == "tailwind")) {
+            palette.colors = at;
+            palette.open(View::Colors);
+        }
         palette
     }
 }
@@ -2582,6 +2883,7 @@ pub fn run(typed: &str) -> Result<(), String> {
     palette.wake = Some(Arc::new(move || {
         let _ = wake.send_event(());
     }));
+    palette.lookup.wake_with(palette.wake.clone());
     // A widget whose output is old, the running clutch not having run it,
     // is run now, without waiting for it: it is drawn again when it answers.
     for (widget, _) in palette.widgets.iter().filter(|(widget, _)| crate::widgets::due(widget)) {
@@ -2605,7 +2907,11 @@ pub fn run(typed: &str) -> Result<(), String> {
 
 /// What the box would list for `typed`, a line for each.
 pub fn list(typed: &str) {
-    for item in &Palette::new(typed).found {
+    let mut palette = Palette::new(typed);
+    // Icons being looked up are waited for.
+    palette.lookup.settle();
+    palette.typed_changed();
+    for item in &palette.found {
         println!("{}\t{}\t{}", item.title, item.detail, item.hint);
     }
 }
@@ -2621,6 +2927,9 @@ pub fn picture(typed: &str, row: usize, path: &str) -> Result<(), String> {
     let mut palette = Palette::new(if look.is_some() { "" } else { typed });
     palette.controls.start(|| {});
     palette.controls.settle();
+    // Icons being looked up are waited for.
+    palette.lookup.settle();
+    palette.typed_changed();
     if let Some((_, view)) = behind {
         palette.view = view;
         palette.typed_changed();

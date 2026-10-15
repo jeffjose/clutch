@@ -5,7 +5,7 @@
 use super::canvas::{duo, mix, Canvas, Text};
 use super::controls::{self, Deed};
 use super::looks::{self, Look, FILLS, GLYPHS, HUES, SHAPES};
-use super::{emoji, glyph, matching, projects, Action, Hit, Layout, Palette, View};
+use super::{colors, emoji, glyph, iconify, matching, projects, Action, Hit, Layout, Palette, Picture, View};
 use super::{ACCENT, DIM_TEXT_COLOR, EDGE_COLOR, KEY_COLOR, ON_ACCENT, PANEL_COLOR, RULE_COLOR, TEXT_COLOR, WELL_COLOR};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -275,6 +275,22 @@ impl Palette {
                             lines.push(keyed(glyph::APP, "Open link", Do::Act(Action::Shell(line)), "Ctrl+O"));
                         }
                         lines.extend([Line::Rule, keyed(glyph::CLOSE, "Forget", Do::Forget(path.clone()), "Ctrl+D")]);
+                        lines
+                    }
+                    // A color, in each of the ways it is written.
+                    (Action::Copy(_), _) if matches!(item.picture, Picture::Color(..)) => {
+                        let Picture::Color(palette, hue, shade) = item.picture else { return None };
+                        let formats = colors::formats(palette, hue, shade).into_iter().skip(1);
+                        let copy = formats.map(|(name, said)| entry(glyph::CLIPBOARD, &format!("Copy {name}"), Do::Act(Action::Copy(said))));
+                        std::iter::once(keyed(glyph::CLIPBOARD, "Copy hex", Do::Go(at), "Enter")).chain(copy).collect()
+                    }
+                    (Action::CopyIcon(name), _) => {
+                        let mut lines = vec![keyed(glyph::CLIPBOARD, "Copy PNG", Do::Go(at), "Enter")];
+                        if let Some(svg) = self.lookup.drawings.get(name) {
+                            lines.push(keyed(glyph::CLIPBOARD, "Copy SVG", Do::Act(Action::Copy(svg.clone())), "Ctrl+Shift+C"));
+                        }
+                        let page = format!("xdg-open {}", super::shell_quoted(&iconify::page_of(name)));
+                        lines.extend([entry(glyph::CLIPBOARD, "Copy name", Do::Act(Action::Copy(name.clone()))), keyed(glyph::RIGHT, "Open on Iconify", Do::Act(Action::Shell(page)), "Ctrl+O")]);
                         lines
                     }
                     (Action::Copy(_), _) => vec![keyed(glyph::CLIPBOARD, "Copy", Do::Go(at), "Enter")],

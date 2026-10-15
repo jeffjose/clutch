@@ -65,6 +65,7 @@ what is searched:
 | `!` | a shell command |
 | `"` | clipboard history, numbered from the newest: `"3` is the third; Enter copies it again, Alt+3 at once. The side shows the one picked out whole |
 | `:` | emoji by name; Enter copies one |
+| `*` | icons, looked up on Iconify as you type: `*home`, or `*lucide:arrow` in one set. Enter copies one as a PNG |
 
 ![The box, listing things to do](docs/do.png)
 
@@ -73,6 +74,7 @@ Some things typed are answered first, above everything else:
 - a sum or a conversion: `12*7`, `sqrt(2)`, `5 km in mi`, `350f in c`, `2.5 gb in mb`. Enter copies the answer.
 - a web address: `youtube.com` opens it in a new tab of your browser.
 - a search from `[links]` in the settings, as the word, a slash and what to look for: `g/rust lifetimes` searches Google, `gh/clutch` GitHub, `yt/…` YouTube. The settings list more, commented out. A link without `{}` opens as it is, and what matches nothing is offered to `g`.
+- a color by its name: `blue-500`, in each palette that has one so called. `#3b82f6` is the nearest in each palette. Enter copies the hex.
 - a timer: `timer 25m tea`, `timer 1h30m`, `timer 10` (minutes). When it is done the desktop says so, with a sound. Timers that are running are listed under the projects, counting down; Enter on one stops it.
 
 ![A conversion, answered](docs/sum.png)
@@ -81,6 +83,23 @@ The clipboard history is kept by the running clutch, in
 `~/.local/state/clutch/clipboard` (the last 100 copies, readable only by
 you). What a password manager marks as a secret is not kept. It needs
 `xclip` on X11; on Wayland it asks `wl-paste`, where that works.
+
+![Icons for "home", from every set](docs/icons.png)
+
+Icons come from [Iconify](https://iconify.design)'s 200-odd sets, fetched
+as they are found, so nothing of them is carried. Enter copies the one
+picked out as a PNG, black on clear and 256 pixels square; Ctrl+K copies
+its SVG or its name instead, or opens its page. What has been fetched is
+kept in `~/.cache/clutch/icons`. It needs `curl`.
+
+![Tailwind's colors](docs/colors.png)
+
+Type `tailwind`, `radix`, `material` or `chakra` and Enter shows that
+palette's colors, a column for each hue and a row for each shade.
+Typing narrows the hues; Ctrl+Tab goes to the next palette. Enter or a
+click copies a color's hex, and Ctrl+K its RGB, OKLCH, CSS variable or
+Tailwind class. Bound to a key, `clutch palette tailwind` opens on the
+colors straight away.
 
 An editor window is treated as a coding project. With nothing typed, the
 projects are shown as tiles, four across, each with an icon, the
