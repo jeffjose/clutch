@@ -256,6 +256,9 @@ enum Action {
     Type(String),
     /// Put an icon on the clipboard, as a picture.
     CopyIcon(String),
+    /// Put a color on the clipboard, written one way or another, and
+    /// keep it as the one last picked from its palette.
+    CopyColor(String, (usize, usize, usize)),
     /// Show a palette's colors, by its place among them. The box stays up.
     Colors(usize),
 }
@@ -713,7 +716,7 @@ impl Stock {
 /// A color of a palette, as a row or a cell: Enter copies its hex.
 fn color_item((palette, hue, shade): (usize, usize, usize)) -> Item {
     let hex = colors::hex(colors::of(palette, hue, shade));
-    let mut item = Item::new(glyph::STAR, &colors::name_of(palette, hue, shade), &colors::all()[palette].name, &hex, Action::Copy(hex.clone()));
+    let mut item = Item::new(glyph::STAR, &colors::name_of(palette, hue, shade), &colors::all()[palette].name, &hex, Action::CopyColor(hex.clone(), (palette, hue, shade)));
     item.picture = Picture::Color(palette, hue, shade);
     item
 }
@@ -859,6 +862,10 @@ fn perform(action: &Action, desk: Option<&Desk>) {
         (Action::ForgetPictures, _) => drop(fs::remove_dir_all(projects::kept_in())),
         (Action::Copy(text), _) => crate::clip::copy_text(text),
         (Action::CopyIcon(name), _) => iconify::copy_png(name),
+        (Action::CopyColor(text, (palette, hue, shade)), _) => {
+            colors::keep_picked(*palette, *hue, *shade);
+            crate::clip::copy_text(text);
+        }
         (Action::Restore(copy), _) => crate::clip::restore(copy),
         (Action::Timer(seconds, label), _) => timers::start(*seconds, label),
         (Action::StopTimer(timer), _) => timers::stop(timer),
@@ -1035,6 +1042,7 @@ impl Palette {
         let Layout { px, pad, .. } = self.layout;
         let (left, top, rows) = self.grid_at(grid);
         let first = self.band * grid.across;
+        let last = if self.view == View::Colors { colors::last_picked(self.colors) } else { None };
         for at in (first..self.found.len()).take(rows * grid.across) {
             let (x, y) = (left + ((at - first) % grid.across) as i32 * grid.wide, top + ((at - first) / grid.across) as i32 * grid.tall);
             let (picked, pointed) = (at == self.selected && !self.beside, self.hover == Some(Hit::Item(at)));
@@ -1047,7 +1055,14 @@ impl Palette {
                     canvas.round_fill(x + 2, y + 2, grid.wide - 4, grid.tall - 4, pad / 3 - 2, PANEL_COLOR, 256);
                 }
                 let inset = if picked || pointed { 2 + gap } else { gap };
-                canvas.round_fill(x + inset, y + inset, grid.wide - 2 * inset, grid.tall - 2 * inset, pad / 4, colors::of(palette, hue, shade), 256);
+                let color = colors::of(palette, hue, shade);
+                canvas.round_fill(x + inset, y + inset, grid.wide - 2 * inset, grid.tall - 2 * inset, pad / 4, color, 256);
+                // The one last picked has a dot, in what stands out on it.
+                if last == Some((hue, shade)) {
+                    let dot = (grid.wide.min(grid.tall) / 4).max(4);
+                    let ink = if colors::oklch(color).0 > 0.6 { 0x000000 } else { 0xFFFFFF };
+                    canvas.round_fill(x + (grid.wide - dot) / 2, y + (grid.tall - dot) / 2, dot, dot, dot / 2, ink, 200);
+                }
                 continue;
             }
             if picked || pointed {
@@ -1886,9 +1901,13 @@ impl Palette {
             let recent = |item: &Item| matches!(item.action, Action::Activate(id) if Some(id) == self.stock.recent);
             self.select(self.found.iter().position(recent).unwrap_or(0));
         }
-        // Among the colors, the first hue at the palette's main shade: Tailwind's 500.
+        // Among the colors, the one last picked from the palette; where its
+        // hue is not shown, its shade; and else the palette's main shade, Tailwind's 500.
         if let (View::Colors, Some(grid)) = (self.view, self.grid()) {
-            self.select(colors::all()[self.colors].main * grid.across);
+            let last = colors::last_picked(self.colors);
+            let shade = last.map_or(colors::all()[self.colors].main, |(_, shade)| shade);
+            let at = |hue: Option<usize>| self.found.iter().position(|item| matches!(item.picture, Picture::Color(_, of, at) if at == shade && hue.is_none_or(|hue| hue == of)));
+            self.select(at(last.map(|(hue, _)| hue)).or(at(None)).unwrap_or(shade * grid.across));
         }
     }
 

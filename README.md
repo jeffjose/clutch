@@ -98,7 +98,10 @@ Type `tailwind`, `radix`, `material` or `chakra` and Enter shows that
 palette's colors, a column for each hue and a row for each shade.
 Typing narrows the hues; Ctrl+Tab goes to the next palette. Enter or a
 click copies a color's hex, and Ctrl+K its RGB, OKLCH, CSS variable or
-Tailwind class. Bound to a key, `clutch palette tailwind` opens on the
+Tailwind class. The palette opens again on the color last copied from
+it, marked with a dot, so the next of the same shade is an arrow away;
+"Forget last pick", on the right button or Ctrl+K, lets it open as it
+comes. Bound to a key, `clutch palette tailwind` opens on the
 colors straight away.
 
 An editor window is treated as a coding project. With nothing typed, the

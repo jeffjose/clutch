@@ -5,7 +5,7 @@
 use super::canvas::{duo, mix, Canvas, Text};
 use super::controls::{self, Deed};
 use super::looks::{self, Look, FILLS, GLYPHS, HUES, SHAPES};
-use super::{colors, emoji, glyph, iconify, matching, projects, Action, Hit, Layout, Palette, Picture, View};
+use super::{colors, emoji, glyph, iconify, matching, projects, Action, Hit, Layout, Palette, View};
 use super::{ACCENT, DIM_TEXT_COLOR, EDGE_COLOR, KEY_COLOR, ON_ACCENT, PANEL_COLOR, RULE_COLOR, TEXT_COLOR, WELL_COLOR};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -41,6 +41,8 @@ pub enum Do {
     Rescan(Target),
     /// Take a copy out of the clipboard's history.
     Forget(PathBuf),
+    /// Forget the color last picked from a palette, by its place among them.
+    ForgetPick(usize),
 }
 
 pub enum Line {
@@ -278,11 +280,16 @@ impl Palette {
                         lines
                     }
                     // A color, in each of the ways it is written.
-                    (Action::Copy(_), _) if matches!(item.picture, Picture::Color(..)) => {
-                        let Picture::Color(palette, hue, shade) = item.picture else { return None };
+                    (Action::CopyColor(_, picked), _) => {
+                        let (palette, hue, shade) = *picked;
                         let formats = colors::formats(palette, hue, shade).into_iter().skip(1);
-                        let copy = formats.map(|(name, said)| entry(glyph::CLIPBOARD, &format!("Copy {name}"), Do::Act(Action::Copy(said))));
-                        std::iter::once(keyed(glyph::CLIPBOARD, "Copy hex", Do::Go(at), "Enter")).chain(copy).collect()
+                        let copy = formats.map(|(name, said)| entry(glyph::CLIPBOARD, &format!("Copy {name}"), Do::Act(Action::CopyColor(said, *picked))));
+                        let mut lines: Vec<Line> = std::iter::once(keyed(glyph::CLIPBOARD, "Copy hex", Do::Go(at), "Enter")).chain(copy).collect();
+                        // The palette opens on the one last picked; this lets it open as it comes.
+                        if colors::last_picked(palette).is_some() {
+                            lines.extend([Line::Rule, entry(glyph::CLOSE, "Forget last pick", Do::ForgetPick(palette))]);
+                        }
+                        lines
                     }
                     (Action::CopyIcon(name), _) => {
                         let mut lines = vec![keyed(glyph::CLIPBOARD, "Copy PNG", Do::Go(at), "Enter")];
@@ -515,6 +522,7 @@ impl Palette {
                     self.icons.clear();
                 }
                 Do::Act(Action::Deed(deed)) => self.controls.act(deed),
+                Do::ForgetPick(palette) => colors::forget_picked(palette),
                 Do::Forget(path) => {
                     let _ = std::fs::remove_file(&path);
                     self.forget_copy(&path);

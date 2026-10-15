@@ -99,6 +99,45 @@ pub fn formats(palette: usize, hue: usize, shade: usize) -> Vec<(&'static str, S
     formats
 }
 
+/// Where the color last copied from each palette is kept, by name, so
+/// that its palette opens on it the next time: "tailwind" = ["red", "300"].
+fn picks_kept() -> std::path::PathBuf {
+    crate::config::state_home().join("clutch/colors.json")
+}
+
+fn picks() -> std::collections::BTreeMap<String, (String, String)> {
+    std::fs::read_to_string(picks_kept()).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+}
+
+fn keep_picks(picks: &std::collections::BTreeMap<String, (String, String)>) {
+    let path = picks_kept();
+    let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
+    if let Ok(text) = serde_json::to_string(picks) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+/// The hue and shade last copied from a palette, if one was and it still has them.
+pub fn last_picked(palette: usize) -> Option<(usize, usize)> {
+    let palette = &all()[palette];
+    let (hue, shade) = picks().remove(&palette.id)?;
+    Some((palette.hues.iter().position(|(name, _)| *name == hue)?, palette.shades.iter().position(|name| *name == shade)?))
+}
+
+pub fn keep_picked(palette: usize, hue: usize, shade: usize) {
+    let mut kept = picks();
+    let palette = &all()[palette];
+    kept.insert(palette.id.clone(), (palette.hues[hue].0.clone(), palette.shades[shade].clone()));
+    keep_picks(&kept);
+}
+
+pub fn forget_picked(palette: usize) {
+    let mut kept = picks();
+    if kept.remove(&all()[palette].id).is_some() {
+        keep_picks(&kept);
+    }
+}
+
 /// The colors called what was typed, in every palette that has one so
 /// called: "blue-500" is Tailwind's, Material's and Chakra's.
 pub fn named(typed: &str) -> Vec<(usize, usize, usize)> {
