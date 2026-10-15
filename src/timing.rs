@@ -6,11 +6,16 @@
 //! as CLUTCH_PRESSED), how long until the box was started, and then how
 //! long each step of its coming up took, to the first frame on screen.
 //! `clutch timings` reads them.
+//!
+//! The box comes up on two threads at once: one makes the window while
+//! the other gathers what is to be found. A step is how long since the
+//! step before it on the same thread, so the two tracks read apart.
 
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::thread::ThreadId;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const KEPT: usize = 500;
@@ -19,7 +24,7 @@ const KEPT: usize = 500;
 struct Marks {
     started: Instant,
     started_at: u128,
-    steps: Vec<(&'static str, Instant)>,
+    steps: Vec<(&'static str, ThreadId, Instant)>,
     done: bool,
 }
 
@@ -45,7 +50,7 @@ pub fn begin() {
 pub fn mark(step: &'static str) {
     if let Ok(mut marks) = MARKS.lock() {
         if let Some(marks) = marks.as_mut().filter(|marks| !marks.done) {
-            marks.steps.push((step, Instant::now()));
+            marks.steps.push((step, std::thread::current().id(), Instant::now()));
         }
     }
 }
@@ -62,12 +67,18 @@ pub fn finish() -> Option<(f64, String)> {
     marks.done = true;
     let ms = |from: Instant, to: Instant| (to - from).as_secs_f64() * 1000.0;
     let mut steps = Vec::new();
-    let mut last = marks.started;
-    for (step, at) in &marks.steps {
-        steps.push(format!("[\"{step}\",{:.1}]", ms(last, *at)));
-        last = *at;
+    // Each thread's steps follow on from one another; the first from the start.
+    let mut last: Vec<(ThreadId, Instant)> = Vec::new();
+    for (step, thread, at) in &marks.steps {
+        let before = last.iter_mut().find(|(on, _)| on == thread);
+        let since = before.as_ref().map_or(marks.started, |(_, since)| *since);
+        steps.push(format!("[\"{step}\",{:.1}]", ms(since, *at)));
+        match before {
+            Some((_, since)) => *since = *at,
+            None => last.push((*thread, *at)),
+        }
     }
-    let total = ms(marks.started, last);
+    let total = marks.steps.last().map_or(0.0, |(_, _, at)| ms(marks.started, *at));
     // From the key to the box starting: what the running clutch and the
     // shell it starts the box with took.
     let pressed = std::env::var("CLUTCH_PRESSED").ok().and_then(|nanos| nanos.parse::<u128>().ok());

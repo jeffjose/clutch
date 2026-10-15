@@ -315,7 +315,10 @@ struct Stock {
 }
 
 impl Stock {
-    fn gather(desk: Option<&Desk>) -> Stock {
+    /// Everything but what has been copied, which `copies` gathers, and
+    /// what git says of the projects: their folders are returned, for
+    /// git to be asked about once the box is up.
+    fn gather(desk: Option<&Desk>) -> (Stock, Vec<PathBuf>) {
         let mut stock = Stock::default();
         let mut sends = Vec::new();
         let mut folders = Vec::new();
@@ -430,17 +433,20 @@ impl Stock {
         crate::timing::mark("project folders");
         // What the folders say of the projects, and a letter for each.
         let mut found: Vec<&mut Project> = stock.windows.iter_mut().chain(stock.closed.iter_mut()).filter_map(|item| item.project.as_mut()).collect();
-        let mut looked: Vec<Project> = found.iter().map(|project| (**project).clone()).collect();
-        projects::look_into(&mut looked, &folders);
+        for (project, folder) in found.iter_mut().zip(&folders) {
+            if let Some(folder) = folder {
+                project.kinds = projects::kinds_of(folder);
+            }
+        }
         // The open ones choose their letters first: a suggestion does not
         // take the letter a project that is open has always had.
-        let called = |open: bool| -> Vec<String> { looked.iter().filter(|project| project.open == open).map(|project| project.name.clone()).collect() };
+        let called = |open: bool| -> Vec<String> { found.iter().filter(|project| project.open == open).map(|project| project.name.clone()).collect() };
         let open_letters = projects::letters(&called(true), &kept);
         let kept: Vec<char> = kept.iter().copied().chain(open_letters.iter().copied()).collect();
         let (mut open_letters, mut other_letters) = (open_letters.into_iter(), projects::letters(&called(false), &kept).into_iter());
-        for (project, looked) in found.iter_mut().zip(looked) {
-            let letter = if looked.open { open_letters.next() } else { other_letters.next() };
-            **project = Project { letter: letter.unwrap_or(' '), ..looked };
+        for project in found.iter_mut() {
+            let letter = if project.open { open_letters.next() } else { other_letters.next() };
+            project.letter = letter.unwrap_or(' ');
         }
         for item in stock.windows.iter_mut().chain(stock.closed.iter_mut()).chain(stock.shelved.iter_mut()) {
             let Some(project) = &item.project else { continue };
@@ -467,49 +473,7 @@ impl Stock {
             stock.commands.push(Item::new(glyph::KEYBOARD, &binding.command, "", &binding.keys, Action::Shell(binding.command.clone())));
         }
 
-        crate::timing::mark("projects and git");
-        // What has been copied: its first line, and how long ago.
-        let now = timers::now();
-        for (number, copy) in crate::clip::history().into_iter().enumerate() {
-            let ago = match now.saturating_sub(copy.at) {
-                ..60 => "just now".to_string(),
-                ..3600 => format!("{} min ago", (now - copy.at) / 60),
-                ..86400 => format!("{} h ago", (now - copy.at) / 3600),
-                _ => format!("{} days ago", (now - copy.at) / 86400),
-            };
-            let mut item = match &copy.text {
-                // An emoji copied is said by its name and shown as its picture: the font the box is set in has none.
-                // (Only what could be one is looked up: the emoji, and their font, are not read for every copy.)
-                Some(text) if text.trim().len() <= 8 && !text.trim().is_ascii() && emoji::all().iter().any(|emoji| emoji.text == text.trim()) => {
-                    let name = emoji::all().iter().find(|emoji| emoji.text == text.trim()).map_or(String::new(), |emoji| emoji.name.clone());
-                    let mut item = Item::new(glyph::CLIPBOARD, &name, &format!("emoji \u{b7} {ago}"), "", Action::Restore(copy.path.clone()));
-                    item.picture = Picture::Emoji(text.trim().to_string());
-                    item.find = format!("{name} emoji");
-                    item
-                }
-                Some(text) => {
-                    let line = text.trim().lines().next().unwrap_or("").chars().take(200).collect::<String>();
-                    let more = if text.trim().lines().count() > 1 { format!("{} lines · {ago}", text.trim().lines().count()) } else { ago };
-                    let mut item = Item::new(glyph::CLIPBOARD, &line, &more, "", Action::Restore(copy.path.clone()));
-                    item.find = text.clone();
-                    item
-                }
-                None => {
-                    // How large, as a PNG's head says.
-                    let head = fs::read(&copy.path).ok().filter(|bytes| bytes.len() > 24).map(|bytes| {
-                        let at = |from: usize| u32::from_be_bytes([bytes[from], bytes[from + 1], bytes[from + 2], bytes[from + 3]]);
-                        (at(16), at(20))
-                    });
-                    let title = head.map_or("A picture".to_string(), |(wide, tall)| format!("A picture, {wide}\u{d7}{tall}"));
-                    let mut item = Item::new(glyph::CLIPBOARD, &title, &ago, "", Action::Restore(copy.path.clone()));
-                    item.find = "picture image screenshot".to_string();
-                    item
-                }
-            };
-            // Each is known by its place, the newest 1: "3 is the third last copied.
-            item.gauge = Gauge::Number(number + 1);
-            stock.copies.push(item);
-        }
+        crate::timing::mark("projects");
         // Found as the controls are, by name, they type what stands for them.
         let mut find_as = |name: &str, find: &str, typed: &str| {
             let mut item = Item::new(glyph::RUN, name, "", typed, Action::Type(typed.to_string()));
@@ -544,8 +508,63 @@ impl Stock {
             stock.controls.push(item);
         }
         stock.commands.extend(sends);
-        crate::timing::mark("clipboard and commands");
-        stock
+        crate::timing::mark("commands");
+        (stock, folders.into_iter().flatten().collect())
+    }
+
+    /// What has been copied, a row each: its first line, and how long
+    /// ago. Read after the box is up, since only `"` wants them.
+    fn copies() -> Vec<Item> {
+        let mut copies = Vec::new();
+        let now = timers::now();
+        for (number, copy) in crate::clip::history().into_iter().enumerate() {
+            let ago = match now.saturating_sub(copy.at) {
+                ..60 => "just now".to_string(),
+                ..3600 => format!("{} min ago", (now - copy.at) / 60),
+                ..86400 => format!("{} h ago", (now - copy.at) / 3600),
+                _ => format!("{} days ago", (now - copy.at) / 86400),
+            };
+            let mut item = match &copy.text {
+                // An emoji copied is said by its name and shown as its picture: the font the box is set in has none.
+                // (Only what could be one is looked up, and by the list of them: the font is not read for a copy.)
+                Some(text) if text.trim().len() <= 8 && !text.trim().is_ascii() && emoji::name_of(text.trim()).is_some() => {
+                    let name = emoji::name_of(text.trim()).unwrap_or("").to_string();
+                    let mut item = Item::new(glyph::CLIPBOARD, &name, &format!("emoji \u{b7} {ago}"), "", Action::Restore(copy.path.clone()));
+                    item.picture = Picture::Emoji(text.trim().to_string());
+                    item.find = format!("{name} emoji");
+                    item
+                }
+                Some(text) => {
+                    let line = text.trim().lines().next().unwrap_or("").chars().take(200).collect::<String>();
+                    let more = if text.trim().lines().count() > 1 { format!("{} lines · {ago}", text.trim().lines().count()) } else { ago };
+                    let mut item = Item::new(glyph::CLIPBOARD, &line, &more, "", Action::Restore(copy.path.clone()));
+                    item.find = text.clone();
+                    item
+                }
+                None => {
+                    // How large, as a PNG's head says.
+                    let head = fs::read(&copy.path).ok().filter(|bytes| bytes.len() > 24).map(|bytes| {
+                        let at = |from: usize| u32::from_be_bytes([bytes[from], bytes[from + 1], bytes[from + 2], bytes[from + 3]]);
+                        (at(16), at(20))
+                    });
+                    let title = head.map_or("A picture".to_string(), |(wide, tall)| format!("A picture, {wide}\u{d7}{tall}"));
+                    let mut item = Item::new(glyph::CLIPBOARD, &title, &ago, "", Action::Restore(copy.path.clone()));
+                    item.find = "picture image screenshot".to_string();
+                    item
+                }
+            };
+            // Each is known by its place, the newest 1: "3 is the third last copied.
+            item.gauge = Gauge::Number(number + 1);
+            copies.push(item);
+        }
+        copies
+    }
+
+    /// What git said of a folder, told to every project kept there.
+    fn git_said(&mut self, said: &projects::GitSaid) {
+        for item in self.windows.iter_mut().chain(&mut self.closed).chain(&mut self.shelved) {
+            tell_git(item, said);
+        }
     }
 
     /// What matches what was typed, the best first.
@@ -710,6 +729,100 @@ impl Stock {
                 found
             }
         }
+    }
+}
+
+/// What a row's picture is kept under, once fetched; nothing for a row
+/// that has none.
+fn picture_key(picture: &Picture, look: &Look, size: usize) -> Option<String> {
+    Some(match picture {
+        Picture::None | Picture::Color(..) => return None,
+        Picture::Iconify(name) => format!("iconify {name} {size}"),
+        Picture::Window(id) => format!("window {id}"),
+        Picture::Named(name) => name.clone(),
+        Picture::Project(name, folder) => format!("project {name} {folder:?} {}", look.said()),
+        Picture::Emoji(text) => format!("emoji {text} {size}"),
+    })
+}
+
+/// A row's picture, fetched: from the desktop, the folders of icons, the
+/// project's own folder or the emoji font.
+fn fetch_picture(item: &Item, look: &Look, size: usize, desk: Option<&Desk>, drawings: &HashMap<String, String>) -> Option<Icon> {
+    match &item.picture {
+        Picture::Iconify(name) => drawings.get(name).and_then(|svg| iconify::render(svg, TEXT_COLOR, size.max(1))),
+        // A window that brings no icon may still be of a program
+        // that has one.
+        Picture::Window(id) => desk.and_then(|desk| desk.icon(*id, size)).or_else(|| apps::icon(&item.detail.to_lowercase())),
+        Picture::Named(name) => apps::icon(name),
+        Picture::Project(name, folder) => projects::picture(name, folder.as_deref(), look),
+        // A copied picture, made small enough to sit in a row.
+        Picture::Emoji(text) => emoji::picture(text).map(|picture| projects::fitted_to(&picture, size.max(1))),
+        Picture::None | Picture::Color(..) => None,
+    }
+}
+
+/// Gather everything the box is made of, on a thread of its own, while
+/// the event loop and the window come up on this one. What is gathered
+/// comes back on the receiver: the stock first, then the rest as it is
+/// ready, each announced by the wake the main thread sends once it has
+/// one. `layout` says how large the pictures in view will be drawn.
+fn gather(layout: Layout, woken: mpsc::Receiver<Arc<dyn Fn() + Send + Sync>>) -> mpsc::Receiver<Gathered> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let desk = Desk::open();
+        crate::timing::mark("desktop");
+        let (mut stock, folders) = Stock::gather(desk.as_ref());
+        let widgets = std::mem::take(&mut stock.widgets).into_iter().map(|widget| {
+            let tile = crate::widgets::shown(&widget);
+            (widget, tile)
+        }).collect();
+        crate::timing::mark("widgets");
+        let looks = looks::load();
+        // The fonts, with the letters the first frame is set in drawn
+        // ready, so that none is drawn for the first time on the screen.
+        let mut text = Text::load();
+        text.warm(layout.px);
+        crate::timing::mark("fonts");
+        // The pictures of what is in view at first: the tiles, and the
+        // rows under them. (Nothing else in the box reads a file to be drawn.)
+        let mut icons = HashMap::new();
+        let tiles = stock.projects();
+        let (bands, rows) = layout.room(tiles.len());
+        let in_view = tiles.iter().take(bands * COLUMNS).map(|item| (item, layout.art() as usize));
+        let others = stock.windows.iter().filter(|item| item.project.is_none()).take(rows).map(|item| (item, (layout.row - layout.pad / 2) as usize));
+        for (item, size) in in_view.chain(others) {
+            let look = match &item.picture {
+                Picture::Project(name, folder) => looks.get(&dress::Target { name: name.clone(), folder: folder.clone() }.key()).cloned().unwrap_or_default(),
+                _ => Look::default(),
+            };
+            if let Some(key) = picture_key(&item.picture, &look, size) {
+                icons.entry(key).or_insert_with(|| fetch_picture(item, &look, size, desk.as_ref(), &HashMap::new()));
+            }
+        }
+        crate::timing::mark("pictures");
+        // Its own icon, for the desktops that show a window's.
+        let window_icon = apps::own().and_then(|icon| {
+            let rgba = icon.pixels.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, (p >> 24) as u8]).collect();
+            WindowIcon::from_rgba(rgba, icon.width as u32, icon.height as u32).ok()
+        });
+        let gathering = Gathering { desk, stock, folders, looks, text, icons, window_icon, widgets };
+        if sender.send(Gathered::Stock(Box::new(gathering))).is_err() {
+            return;
+        }
+        // The copies, announced: the main thread is in its event loop now.
+        if sender.send(Gathered::Copies(Stock::copies())).is_ok() {
+            if let Ok(wake) = woken.recv() {
+                wake();
+            }
+        }
+    });
+    receiver
+}
+
+/// What git said of a folder, told to a row if it is that project's.
+fn tell_git(item: &mut Item, (folder, (branch, changed)): &projects::GitSaid) {
+    if let Some(project) = item.project.as_mut().filter(|project| project.folder.as_ref() == Some(folder)) {
+        (project.branch, project.changed) = (branch.clone(), Some(*changed));
     }
 }
 
@@ -934,6 +1047,14 @@ impl Layout {
     fn tile(&self) -> i32 {
         self.row + self.pad / 4
     }
+
+    /// With so many tiles: how many bands of them are in view, and how
+    /// many rows fit under them.
+    fn room(&self, tiles: usize) -> (usize, usize) {
+        let bands = tiles.div_ceil(COLUMNS).min(BANDS);
+        let taken = if bands > 0 { bands as i32 * self.tile() + self.pad / 2 } else { 0 };
+        (bands, ((ROWS as i32 * self.row - taken) / self.row).max(1) as usize)
+    }
 }
 
 struct Palette {
@@ -994,6 +1115,39 @@ struct Palette {
     lookup: iconify::Lookup,
     /// The palette whose colors are shown, by its place among them.
     colors: usize,
+    /// What is being gathered on another thread while the window comes
+    /// up, and whether the stock of it has come.
+    gathering: Option<mpsc::Receiver<Gathered>>,
+    stocked: bool,
+    /// The projects' folders, for git to be asked about once the box is
+    /// up; and what it says, as it does.
+    folders: Vec<PathBuf>,
+    git_said: Option<mpsc::Receiver<projects::GitSaid>>,
+    /// Whether the window's pixels can be seen through: on Wayland, where
+    /// that is how the corners are rounded.
+    transparent: bool,
+}
+
+/// What the gathering thread sends, in this order: the stock, then what
+/// has been copied.
+enum Gathered {
+    Stock(Box<Gathering>),
+    Copies(Vec<Item>),
+}
+
+/// Everything the first frame needs, gathered while the window comes up.
+struct Gathering {
+    desk: Option<Desk>,
+    stock: Stock,
+    folders: Vec<PathBuf>,
+    looks: BTreeMap<String, Look>,
+    text: Text,
+    /// The pictures of the tiles and rows in view at first, so that the
+    /// first frame reads no files.
+    icons: HashMap<String, Option<Icon>>,
+    window_icon: Option<WindowIcon>,
+    /// The widgets, as they last were: what the running clutch keeps.
+    widgets: Vec<(crate::widgets::Widget, Option<crate::widgets::Tile>)>,
 }
 
 /// What is found, drawn as cells rather than rows: icons, colors. How
@@ -1796,10 +1950,21 @@ impl Palette {
     }
 
     /// The pointer moved, or what is under it may have.
+    /// What the pointer is over, looked at again. Drawn again only where
+    /// that has changed: the pointer moves many times a frame.
     fn pointed(&mut self) {
+        let was = self.hover;
         self.hover = self.pointer.and_then(|(x, y)| self.hit(x, y));
+        if let Some(window) = self.window.as_ref().filter(|_| was != self.hover) {
+            if was.is_some() != self.hover.is_some() {
+                window.set_cursor(if self.hover.is_some() { CursorIcon::Pointer } else { CursorIcon::Default });
+            }
+            window.request_redraw();
+        }
+    }
+
+    fn draw_again(&self) {
         if let Some(window) = &self.window {
-            window.set_cursor(if self.hover.is_some() { CursorIcon::Pointer } else { CursorIcon::Default });
             window.request_redraw();
         }
     }
@@ -1868,6 +2033,7 @@ impl Palette {
             None => {}
         }
         self.pointed();
+        self.draw_again();
     }
 
     /// The device picked out, in the list of them.
@@ -1923,10 +2089,7 @@ impl Palette {
 
     /// How many bands of tiles are in view, and how many rows fit under them.
     fn room(&self) -> (usize, usize) {
-        let bands = self.tiles.div_ceil(COLUMNS).min(BANDS);
-        let Layout { row, pad, .. } = self.layout;
-        let taken = if bands > 0 { bands as i32 * self.layout.tile() + pad / 2 } else { 0 };
-        (bands, ((ROWS as i32 * row - taken) / row).max(1) as usize)
+        self.layout.room(self.tiles)
     }
 
     fn select(&mut self, to: usize) {
@@ -2031,26 +2194,9 @@ impl Palette {
             Picture::Project(name, folder) => self.project_look(name, folder),
             _ => Look::default(),
         };
-        let key = match &item.picture {
-            Picture::None | Picture::Color(..) => return None,
-            Picture::Iconify(name) => format!("iconify {name} {size}"),
-            Picture::Window(id) => format!("window {id}"),
-            Picture::Named(name) => name.clone(),
-            Picture::Project(name, folder) => format!("project {name} {folder:?} {}", look.said()),
-            Picture::Emoji(text) => format!("emoji {text} {size}"),
-        };
+        let key = picture_key(&item.picture, &look, size)?;
         let (desk, drawings) = (self.desk.as_ref(), &self.lookup.drawings);
-        let fetch = || match &item.picture {
-            Picture::Iconify(name) => drawings.get(name).and_then(|svg| iconify::render(svg, TEXT_COLOR, size.max(1))),
-            // A window that brings no icon may still be of a program
-            // that has one.
-            Picture::Window(id) => desk.and_then(|desk| desk.icon(*id, size)).or_else(|| apps::icon(&item.detail.to_lowercase())),
-            Picture::Named(name) => apps::icon(name),
-            Picture::Project(name, folder) => projects::picture(name, folder.as_deref(), &look),
-            // A copied picture, made small enough to sit in a row.
-            Picture::Emoji(text) => emoji::picture(text).map(|picture| projects::fitted_to(&picture, size.max(1))),
-            Picture::None | Picture::Color(..) => None,
-        };
+        let fetch = || fetch_picture(item, &look, size, desk, drawings);
         self.icons.entry(key).or_insert_with(fetch).as_ref()
     }
 
@@ -2454,7 +2600,10 @@ impl Palette {
             self.draw_editor(&mut canvas);
         }
         self.draw_menu(&mut canvas);
-        canvas.round_window(corner);
+        // On X11 the window itself is cut to the shape: no pixel need be clear.
+        if self.transparent {
+            canvas.round_window(corner);
+        }
     }
 
     fn redraw(&mut self) {
@@ -2647,12 +2796,9 @@ impl ApplicationHandler for Palette {
         }
         let size = PhysicalSize::new(self.layout.full() as u32, self.layout.height() as u32);
         // The name is what GNOME's shell knows the box by, to place it.
-        // Its own icon, for the desktops that show a window's.
-        let icon = apps::own().and_then(|icon| {
-            let rgba = icon.pixels.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, (p >> 24) as u8]).collect();
-            WindowIcon::from_rgba(rgba, icon.width as u32, icon.height as u32).ok()
-        });
-        let attributes = Window::default_attributes().with_title("clutch").with_window_icon(icon);
+        // (Its own icon, for the desktops that show a window's, is given
+        // it with the stock: it is read while the window comes up.)
+        let attributes = Window::default_attributes().with_title("clutch");
         let attributes = WindowAttributesExtX11::with_name(attributes, "clutch", "clutch");
         let attributes = WindowAttributesExtWayland::with_name(attributes, "clutch", "clutch");
         let mut attributes = attributes
@@ -2661,7 +2807,7 @@ impl ApplicationHandler for Palette {
             .with_resizable(false)
             .with_window_level(WindowLevel::AlwaysOnTop)
             // On Wayland the corners are rounded by leaving them clear.
-            .with_transparent(env::var_os("WAYLAND_DISPLAY").is_some())
+            .with_transparent(self.transparent)
             .with_inner_size(size);
         if let Some((x, y)) = self.place {
             attributes = attributes.with_position(PhysicalPosition::new(x, y));
@@ -2681,7 +2827,8 @@ impl ApplicationHandler for Palette {
         let window = Arc::new(window);
         let surface = Context::new(window.clone()).and_then(|context| Surface::new(&context, window.clone()));
         let Ok(surface) = surface else { return event_loop.exit() };
-        window.focus_window();
+        // (The keyboard is asked for once the first frame is up: asking
+        // is a round trip to the X server, which the frame need not wait for.)
         (self.window, self.surface) = (Some(window), Some(surface));
     }
 
@@ -2689,6 +2836,12 @@ impl ApplicationHandler for Palette {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => {
+                // Nothing is drawn without the stock: the first frame waits
+                // for it, where the window came up first.
+                if !self.stocked {
+                    self.take_in(true);
+                    crate::timing::mark("stock");
+                }
                 self.redraw();
                 // The first frame is on the screen: what it took is kept.
                 crate::timing::mark("first frame");
@@ -2696,8 +2849,12 @@ impl ApplicationHandler for Palette {
                     // Said at the foot, drawn again to show it.
                     self.took = Some(took);
                     if let Some(window) = &self.window {
+                        window.focus_window();
                         window.request_redraw();
                     }
+                    // Only now is git asked: the tiles say how each
+                    // project stands as it answers.
+                    self.ask_git();
                 }
                 // A font for letters ours lacks is on its way: draw again
                 // when it should be in.
@@ -2730,6 +2887,7 @@ impl ApplicationHandler for Palette {
                 let hit = self.hover;
                 self.open_menu(hit);
                 self.pointed();
+                self.draw_again();
             }
             // The wheel moves what is picked out, a step a notch.
             WindowEvent::MouseWheel { delta, .. } => {
@@ -2747,6 +2905,7 @@ impl ApplicationHandler for Palette {
                     self.step_down(down);
                 }
                 self.pointed();
+                self.draw_again();
             }
             // Clicked away from: it was not wanted after all.
             WindowEvent::Focused(focused) => {
@@ -2759,8 +2918,10 @@ impl ApplicationHandler for Palette {
         }
     }
 
-    /// The controls have something new to say.
+    /// The controls have something new to say; or the gathering thread,
+    /// or the icons being looked up, or a widget.
     fn user_event(&mut self, _: &ActiveEventLoop, _: ()) {
+        self.take_in(false);
         self.picture_chosen();
         // Icons have come for what is typed.
         if self.lookup.take() {
@@ -2806,27 +2967,28 @@ impl ApplicationHandler for Palette {
 }
 
 impl Palette {
-    /// The box with `typed` already in it, not yet on the screen.
-    fn new(typed: &str) -> Palette {
-        let desk = Desk::open();
-        crate::timing::mark("desktop");
-        // Why not, to be said where the windows would have been listed.
-        let no_desk = match (&desk, env::var_os("WAYLAND_DISPLAY")) {
-            (Some(_), _) => String::new(),
-            (None, Some(_)) => format!("GNOME extension {}", extension::health().err().unwrap_or("gave no windows".into())),
-            (None, None) => "no X display".to_string(),
-        };
+    /// The box with `typed` already in it, not yet on the screen, and
+    /// with nothing in it yet: the stock is gathered on another thread
+    /// meanwhile, and `take_in` puts it in. What is done here is only
+    /// what the window needs: how large, and where.
+    fn new(typed: &str, woken: mpsc::Receiver<Arc<dyn Fn() + Send + Sync>>) -> Palette {
+        let wayland = env::var_os("WAYLAND_DISPLAY").is_some();
+        // On X11 the desktop says which monitor is in use, which is wanted
+        // before the window is made: asked over a connection of this
+        // thread's own, the gathering thread having another. On Wayland
+        // the window is told, and the shell is asked once, there.
+        let desk = if wayland { None } else { Desk::open() };
         // In the middle of the monitor in use, each way. Where that cannot
         // be asked, the desktop places the box.
         let monitor = desk.as_ref().and_then(Desk::monitor_in_use);
         let scale = desk.as_ref().and_then(Desk::text_scale).unwrap_or(1.0);
         let layout = Layout::for_monitor(monitor.map_or(1080, |(_, _, _, height)| height), scale);
         let place = monitor.map(|(x, y, width, height)| (x + (width - layout.full()) / 2, y + ((height - layout.height()) / 2).max(0)));
-        let stock = Stock::gather(desk.as_ref());
-        let mut palette = Palette {
+        let gathering = gather(layout, woken);
+        Palette {
             desk,
-            no_desk,
-            stock,
+            no_desk: String::new(),
+            stock: Stock::default(),
             field: TextField::new(typed),
             found: Vec::new(),
             selected: 0,
@@ -2836,7 +2998,7 @@ impl Palette {
             modifiers: ModifiersState::empty(),
             layout,
             place,
-            text: Text::load(),
+            text: Text::empty(),
             icons: HashMap::new(),
             window: None,
             surface: None,
@@ -2847,7 +3009,7 @@ impl Palette {
             control: 0,
             pointer: None,
             hover: None,
-            looks: looks::load(),
+            looks: BTreeMap::new(),
             menu: None,
             editing: None,
             away: false,
@@ -2859,25 +3021,112 @@ impl Palette {
             shown: controls::shown(),
             widgets: Vec::new(),
             took: None,
-        };
-        // The widgets, as they last were: what the running clutch keeps.
-        {
-            let widgets = std::mem::take(&mut palette.stock.widgets);
-            palette.widgets = widgets.into_iter().map(|widget| {
-                let tile = crate::widgets::shown(&widget);
-                (widget, tile)
-            }).collect();
-            crate::timing::mark("widgets");
+            gathering: Some(gathering),
+            stocked: false,
+            folders: Vec::new(),
+            git_said: None,
+            transparent: wayland,
         }
-        palette.typed_changed();
+    }
+
+    /// Take in what the gathering thread has sent. With `wait`, the stock
+    /// is waited for, where it has not come yet: nothing can be shown
+    /// without it. The rest is taken as it is there.
+    fn take_in(&mut self, wait: bool) {
+        let Some(from) = self.gathering.take() else { return };
+        loop {
+            let got = if wait && !self.stocked { from.recv().ok() } else { from.try_recv().ok() };
+            match got {
+                Some(Gathered::Stock(gathered)) => self.stocked(*gathered),
+                Some(Gathered::Copies(copies)) => {
+                    self.stock.copies = copies;
+                    // Looking through them already, before they had come.
+                    if self.view == View::Find && Mode::of(&self.field.string()).0 == Mode::Clipboard {
+                        self.typed_changed();
+                    }
+                }
+                // Nothing more now; or ever, the thread being done.
+                None => break,
+            }
+        }
+        self.gathering = Some(from);
+        // And what git has said since, of the projects' folders.
+        while let Some(said) = self.git_said.as_ref().and_then(|git| git.try_recv().ok()) {
+            self.stock.git_said(&said);
+            self.found.iter_mut().for_each(|item| tell_git(item, &said));
+        }
+    }
+
+    /// Ask git how each project stands, now that the box is up.
+    fn ask_git(&mut self) {
+        let wake = self.wake.clone();
+        let folders = std::mem::take(&mut self.folders);
+        self.git_said = Some(projects::ask_git(&folders, move || {
+            if let Some(wake) = &wake {
+                wake();
+            }
+        }));
+    }
+
+    /// The stock has come: the box is filled from it.
+    fn stocked(&mut self, gathered: Gathering) {
+        let Gathering { desk, stock, folders, looks, text, icons, window_icon, widgets } = gathered;
+        self.folders = folders;
+        // The desktop reached on this thread stays, where there is one.
+        if self.desk.is_none() {
+            self.desk = desk;
+        }
+        // Why not, to be said where the windows would have been listed.
+        self.no_desk = match (&self.desk, env::var_os("WAYLAND_DISPLAY")) {
+            (Some(_), _) => String::new(),
+            (None, Some(_)) => format!("GNOME extension {}", extension::health().err().unwrap_or("gave no windows".into())),
+            (None, None) => "no X display".to_string(),
+        };
+        (self.stock, self.looks, self.text, self.icons) = (stock, looks, text, icons);
+        self.stocked = true;
+        if let (Some(window), Some(icon)) = (&self.window, window_icon) {
+            window.set_window_icon(Some(icon));
+        }
+        // A widget whose output is old, the running clutch not having run
+        // it, is run now, without waiting for it: drawn again when it answers.
+        self.widgets = widgets;
+        for (widget, _) in self.widgets.iter().filter(|(widget, _)| crate::widgets::due(widget)) {
+            let (widget, wake) = (widget.clone(), self.wake.clone());
+            thread::spawn(move || {
+                if crate::widgets::refresh(&widget) {
+                    if let Some(wake) = wake {
+                        wake();
+                    }
+                }
+            });
+        }
+        self.typed_changed();
         // Opened with a palette's name, the box opens on its colors:
         // `clutch palette tailwind` can be bound to a key of its own.
-        let named = typed.trim().to_lowercase();
+        let named = self.field.string().trim().to_lowercase();
         if let Some(at) = colors::all().iter().position(|palette| palette.id == named || (named == "colors" && palette.id == "tailwind")) {
-            palette.colors = at;
-            palette.open(View::Colors);
+            self.colors = at;
+            self.open(View::Colors);
         }
-        palette
+        crate::timing::mark("stock");
+    }
+
+    /// Everything gathered, in: the stock, the copies, and what git says
+    /// for as long as that is waited for. For the box listed or pictured
+    /// rather than shown, which must have it all at once.
+    fn settle_stock(&mut self) {
+        self.take_in(true);
+        if let Some(from) = &self.gathering {
+            if let Ok(Gathered::Copies(copies)) = from.recv() {
+                self.stock.copies = copies;
+            }
+        }
+        self.ask_git();
+        let until = Instant::now() + projects::GIT_WAIT;
+        while let Some(said) = self.git_said.as_ref().and_then(|git| git.recv_timeout(until.saturating_duration_since(Instant::now())).ok()) {
+            self.stock.git_said(&said);
+        }
+        self.typed_changed();
     }
 }
 
@@ -2902,28 +3151,23 @@ pub fn run(typed: &str) -> Result<(), String> {
             process::exit(0);
         });
     }
+    // The stock is gathered on another thread from here on, while the
+    // event loop and the window come up on this one; the first frame
+    // waits for whichever is later.
+    let (give_wake, woken) = mpsc::channel();
+    let mut palette = Palette::new(typed, woken);
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     crate::timing::mark("event loop");
-    let mut palette = Palette::new(typed);
     // The box is up before the controls have answered, and is woken as
-    // each does.
+    // each does; and as the gathering thread has more to give.
     let proxy = event_loop.create_proxy();
     let wake = event_loop.create_proxy();
     palette.wake = Some(Arc::new(move || {
         let _ = wake.send_event(());
     }));
     palette.lookup.wake_with(palette.wake.clone());
-    // A widget whose output is old, the running clutch not having run it,
-    // is run now, without waiting for it: it is drawn again when it answers.
-    for (widget, _) in palette.widgets.iter().filter(|(widget, _)| crate::widgets::due(widget)) {
-        let (widget, wake) = (widget.clone(), palette.wake.clone());
-        thread::spawn(move || {
-            if crate::widgets::refresh(&widget) {
-                if let Some(wake) = wake {
-                    wake();
-                }
-            }
-        });
+    if let Some(wake) = palette.wake.clone() {
+        let _ = give_wake.send(wake);
     }
     palette.controls.start(move || {
         let _ = proxy.send_event(());
@@ -2936,7 +3180,8 @@ pub fn run(typed: &str) -> Result<(), String> {
 
 /// What the box would list for `typed`, a line for each.
 pub fn list(typed: &str) {
-    let mut palette = Palette::new(typed);
+    let mut palette = Palette::new(typed, mpsc::channel().1);
+    palette.settle_stock();
     // Icons being looked up are waited for.
     palette.lookup.settle();
     palette.typed_changed();
@@ -2953,7 +3198,8 @@ pub fn picture(typed: &str, row: usize, path: &str) -> Result<(), String> {
     // "look:" is the look of what is at `row` being chosen, and "menu:" its menu.
     let (look, menu) = (typed.strip_prefix("look:"), typed.strip_prefix("menu:"));
     let typed = look.or(menu).unwrap_or(behind.map_or(typed, |(typed, _)| typed));
-    let mut palette = Palette::new(if look.is_some() { "" } else { typed });
+    let mut palette = Palette::new(if look.is_some() { "" } else { typed }, mpsc::channel().1);
+    palette.settle_stock();
     palette.controls.start(|| {});
     palette.controls.settle();
     // Icons being looked up are waited for.

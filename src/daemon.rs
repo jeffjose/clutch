@@ -648,7 +648,12 @@ fn launch(binding: &Binding, under_systemd: bool) {
                 command.env_remove(ours);
             }
         }
-        match command.status() {
+        let started = command.spawn();
+        // Asked again now, for the next key, rather than before this one.
+        if under_systemd {
+            ask_session_environment();
+        }
+        match started.and_then(|mut child| child.wait()) {
             Ok(status) if status.success() => {}
             Ok(status) => log(format!("{keys}: {text}: {status}")),
             Err(e) => log(format!("{keys}: {text}: {e}")),
@@ -656,18 +661,31 @@ fn launch(binding: &Binding, under_systemd: bool) {
     });
 }
 
+/// The session's environment as systemd was last asked for it: it takes
+/// a couple of milliseconds to ask, which a key should not wait for.
+static SESSION: Mutex<Option<Vec<(String, String)>>> = Mutex::new(None);
+
 fn session_environment() -> Vec<(String, String)> {
-    let Ok(output) = Command::new("systemctl").args(["--user", "show-environment"]).output() else {
-        return Vec::new();
-    };
-    String::from_utf8_lossy(&output.stdout)
+    let known = SESSION.lock().ok().and_then(|known| known.clone());
+    known.unwrap_or_else(ask_session_environment)
+}
+
+fn ask_session_environment() -> Vec<(String, String)> {
+    let output = Command::new("systemctl").args(["--user", "show-environment"]).output();
+    let environment: Vec<(String, String)> = output
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        .unwrap_or_default()
         .lines()
         .filter_map(|line| line.split_once('='))
         // A value with anything odd in it is written as $'...'; none of
         // the ones a program needs to find the display are.
         .filter(|(_, value)| !value.starts_with("$'"))
         .map(|(name, value)| (name.to_string(), value.to_string()))
-        .collect()
+        .collect();
+    if let Ok(mut known) = SESSION.lock() {
+        *known = Some(environment.clone());
+    }
+    environment
 }
 
 /// Tell systemd we are up, and again each time round that we still are.

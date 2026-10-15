@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Default)]
 pub struct Project {
@@ -409,18 +409,27 @@ fn git_said(printed: &str) -> (String, usize) {
     (branch.to_string(), lines.count())
 }
 
-/// How long git is waited for, all the projects together. One that is
-/// vast is drawn without what git would have said.
-const GIT_WAIT: Duration = Duration::from_millis(120);
+/// How git stands in a folder: the branch, unless it is the usual one,
+/// and how many files have changed.
+pub type GitSaid = (PathBuf, (String, usize));
 
-/// Fill in the folders' side of each project: what it is written in, and,
-/// asked of all at once, how its git stands.
-pub fn look_into(projects: &mut [Project], folders: &[Option<PathBuf>]) {
+/// How long git is waited for, all the projects together, where the box
+/// must have everything before it goes on: listed or pictured rather
+/// than shown. On the screen it is not waited for at all.
+pub const GIT_WAIT: Duration = Duration::from_millis(120);
+
+/// Ask git how each folder stands, all at once and each on a thread of
+/// its own. What each says comes back on the receiver as it does, and
+/// `wake` is called each time, so the box is drawn without waiting, and
+/// again as they answer: a project that is vast is drawn without what
+/// git would have said, until it has. (Asked once the box is on the
+/// screen: twenty of them starting at once slow the desktop, and the
+/// window, as it comes up.)
+pub fn ask_git(folders: &[PathBuf], wake: impl Fn() + Send + Sync + 'static) -> mpsc::Receiver<GitSaid> {
     let (sender, receiver) = mpsc::channel();
-    for (at, folder) in folders.iter().enumerate() {
-        let Some(folder) = folder.clone() else { continue };
-        projects[at].kinds = kinds_of(&folder);
-        let sender = sender.clone();
+    let wake = std::sync::Arc::new(wake);
+    for folder in folders.iter().cloned() {
+        let (sender, wake) = (sender.clone(), wake.clone());
         thread::spawn(move || {
             let output = Command::new("git")
                 .arg("-C")
@@ -429,15 +438,13 @@ pub fn look_into(projects: &mut [Project], folders: &[Option<PathBuf>]) {
                 .stderr(Stdio::null())
                 .output();
             if let Ok(output) = output.as_ref().map(|output| String::from_utf8_lossy(&output.stdout)) {
-                let _ = sender.send((at, git_said(&output)));
+                if sender.send((folder, git_said(&output))).is_ok() {
+                    wake();
+                }
             }
         });
     }
-    drop(sender);
-    let until = Instant::now() + GIT_WAIT;
-    while let Ok((at, (branch, changed))) = receiver.recv_timeout(until.saturating_duration_since(Instant::now())) {
-        (projects[at].branch, projects[at].changed) = (branch, Some(changed));
-    }
+    receiver
 }
 
 #[cfg(test)]

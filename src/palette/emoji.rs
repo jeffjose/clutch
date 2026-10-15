@@ -24,6 +24,22 @@ pub fn all() -> &'static [Emoji] {
     static ALL: OnceLock<Vec<Emoji>> = OnceLock::new();
     ALL.get_or_init(|| {
         let Some(font) = font() else { return Vec::new() };
+        let has = |emoji: &&Emoji| emoji.text.chars().next().is_some_and(|c| font.glyphs.contains_key(&(c as u32)));
+        listed().iter().filter(has).map(|emoji| Emoji { text: emoji.text.clone(), name: emoji.name.clone(), group: emoji.group.clone() }).collect()
+    })
+}
+
+/// The name of an emoji, from the list alone: the font, which is large,
+/// is not read to say what a copy was.
+pub fn name_of(text: &str) -> Option<&'static str> {
+    listed().iter().find(|emoji| emoji.text == text).map(|emoji| emoji.name.as_str())
+}
+
+/// Every emoji that is one letter, as Unicode lists them, whether or
+/// not the font has a picture of it.
+fn listed() -> &'static [Emoji] {
+    static LISTED: OnceLock<Vec<Emoji>> = OnceLock::new();
+    LISTED.get_or_init(|| {
         let text = fs::read_to_string(LIST).unwrap_or_default();
         let mut group = String::new();
         let mut all = Vec::new();
@@ -39,9 +55,6 @@ pub fn all() -> &'static [Emoji] {
             }
             let points: Vec<u32> = points.split_whitespace().filter_map(|point| u32::from_str_radix(point, 16).ok()).filter(|point| *point != 0xFE0F).collect();
             let [point] = points[..] else { continue };
-            if !font.glyphs.contains_key(&point) {
-                continue;
-            }
             let name = rest.split_once('#').map_or("", |(_, said)| said).split_whitespace().skip(2).collect::<Vec<_>>().join(" ");
             let text = char::from_u32(point).map(String::from).unwrap_or_default();
             all.push(Emoji { text, name, group: group.clone() });

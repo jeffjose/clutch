@@ -41,6 +41,7 @@ impl<'a> Canvas<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn round_fill(&mut self, x: i32, y: i32, w: i32, h: i32, radius: i32, color: u32, amount: u32) {
         let radius = radius.clamp(0, w.min(h) / 2);
+        let solid = amount >= 256;
         for py in y..y + h {
             // Only the ends of the rows at the top and bottom curve; the
             // rest of every row is plain.
@@ -50,8 +51,11 @@ impl<'a> Canvas<'a> {
                 let cover = rounded_cover(px, py, x, y, w, h, radius, 0.0);
                 self.cover(px, py, color, (cover * f64::from(amount)) as u32);
             }
-            for row in self.rows(x + inset, py, w - 2 * inset, 1) {
-                row.iter_mut().for_each(|pixel| *pixel = mix(*pixel, color, amount.min(256)));
+            // (Solid, the row is set rather than mixed: the panel is the
+            // whole window, and would otherwise be a million mixes a frame.)
+            match solid {
+                true => self.fill(x + inset, py, w - 2 * inset, 1, color),
+                false => self.rows(x + inset, py, w - 2 * inset, 1).for_each(|row| row.iter_mut().for_each(|pixel| *pixel = mix(*pixel, color, amount))),
             }
         }
     }
@@ -182,7 +186,35 @@ impl Text {
         let load = |bytes: &[u8]| fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok();
         let font = load(GEIST);
         let icons = load(include_bytes!("../../assets/solar.ttf"));
-        Text { font, icons, drawings: None, others: Vec::new(), loading: None, sought: HashSet::new(), glyphs: HashMap::new() }
+        Text { font, icons, ..Text::empty() }
+    }
+
+    /// No fonts at all, which draws nothing: for a box whose fonts are
+    /// still being read.
+    pub fn empty() -> Self {
+        Text { font: None, icons: None, drawings: None, others: Vec::new(), loading: None, sought: HashSet::new(), glyphs: HashMap::new() }
+    }
+
+    /// Draw the letters the box is set in ready, at the size of its text
+    /// and of its lesser words, so that the first frame finds them drawn.
+    pub fn warm(&mut self, px: u32) {
+        let letters: Vec<char> = (' '..='~').chain("\u{2026}\u{b7}\u{203a}\u{2190}\u{2192}".chars()).collect();
+        for px in [px, px * 5 / 6] {
+            for c in &letters {
+                self.glyph(*c, px);
+            }
+        }
+    }
+
+    /// The letter drawn at a size, once: drawn the first time it is wanted.
+    fn glyph(&mut self, c: char, px: u32) -> Option<&(fontdue::Metrics, Vec<u8>)> {
+        if !self.glyphs.contains_key(&(c, px)) {
+            let which = self.font_with(c);
+            let font = self.font(which)?;
+            let glyph = font.rasterize(Self::letter(which, c), Self::size(which, px));
+            self.glyphs.insert((c, px), glyph);
+        }
+        self.glyphs.get(&(c, px))
     }
 
     pub fn line_height(px: u32) -> i32 {
@@ -266,14 +298,21 @@ impl Text {
         if self.width(line, px) <= width {
             return line.to_string();
         }
-        let mut kept: Vec<char> = line.chars().collect();
-        loop {
-            kept.pop();
-            let shorter: String = kept.iter().chain(&['\u{2026}']).collect();
-            if kept.is_empty() || self.width(&shorter, px) <= width {
-                return shorter;
+        // Each letter measured once: the mark fits after the longest
+        // beginning it leaves room for.
+        let mark = self.width("\u{2026}", px) as f32;
+        let mut across = 0.0;
+        let mut kept = String::new();
+        for c in line.chars() {
+            let which = self.font_with(c);
+            across += self.font(which).map_or(0.0, |font| font.metrics(Self::letter(which, c), Self::size(which, px)).advance_width);
+            if (across + mark).ceil() as i32 > width {
+                break;
             }
+            kept.push(c);
         }
+        kept.push('\u{2026}');
+        kept
     }
 
     /// Draws one line of text whose line box has its top-left at `(x, y)`.
@@ -286,13 +325,7 @@ impl Text {
 
         let mut pen = x as f32;
         for c in text.chars() {
-            if !self.glyphs.contains_key(&(c, px)) {
-                let which = self.font_with(c);
-                let Some(font) = self.font(which) else { continue };
-                let glyph = font.rasterize(Self::letter(which, c), Self::size(which, px));
-                self.glyphs.insert((c, px), glyph);
-            }
-            let (metrics, coverage) = &self.glyphs[&(c, px)];
+            let Some((metrics, coverage)) = self.glyph(c, px) else { continue };
             let left = pen.round() as i32 + metrics.xmin;
             // An icon sits in the middle of the line, whatever its font
             // takes for a baseline; letters stand on the text's.
