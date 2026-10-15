@@ -45,7 +45,7 @@ again when it isn't.
 
 ## The box
 
-![The box, listing things to do](docs/palette.png)
+![The box, with projects as tiles and the controls beside them](docs/box.png)
 
 ```toml
 "alt+k" = "clutch palette"
@@ -66,12 +66,16 @@ what is searched:
 | `"` | clipboard history, numbered from the newest: `"3` is the third; Enter copies it again, Alt+3 at once. The side shows the one picked out whole |
 | `:` | emoji by name; Enter copies one |
 
+![The box, listing things to do](docs/do.png)
+
 Some things typed are answered first, above everything else:
 
 - a sum or a conversion: `12*7`, `sqrt(2)`, `5 km in mi`, `350f in c`, `2.5 gb in mb`. Enter copies the answer.
 - a web address: `youtube.com` opens it in a new tab of your browser.
 - a search from `[links]` in the settings, as the word, a slash and what to look for: `g/rust lifetimes` searches Google, `gh/clutch` GitHub, `yt/…` YouTube. The settings list more, commented out. A link without `{}` opens as it is, and what matches nothing is offered to `g`.
 - a timer: `timer 25m tea`, `timer 1h30m`, `timer 10` (minutes). When it is done the desktop says so, with a sound. Timers that are running are listed under the projects, counting down; Enter on one stops it.
+
+![A conversion, answered](docs/sum.png)
 
 The clipboard history is kept by the running clutch, in
 `~/.local/state/clutch/clipboard` (the last 100 copies, readable only by
@@ -107,6 +111,8 @@ Tailwind's palette), its background
 (twenty-one). Looks are kept in `~/.config/clutch/looks.toml`. Choosing
 a picture needs `zenity`; emoji need the Noto Color Emoji font and
 Unicode's `emoji-test.txt`, which most distributions install.
+
+![Choosing a project's icon, color, background and shape](docs/look.png)
 
 Anything gone into (Wi-Fi, Sound, a project's look) has a "← Find"
 button where the search was; Esc, or Backspace with nothing typed, goes
@@ -154,6 +160,8 @@ Esc goes back. The controls can also be
 found by typing their names. They use `nmcli`, `pactl`, `busctl`, `bluetoothctl`,
 and `gsettings` or `xfconf-query`; a control whose tool is missing says
 "not here".
+
+![Sound, gone into: what is playing, and the devices](docs/sound.png)
 
 Two more commands are meant to be bound to keys of their own:
 
