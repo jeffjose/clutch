@@ -23,6 +23,8 @@ pub struct Config {
     pub links: Vec<(String, String)>,
     /// Programs whose output is shown as tiles in the box.
     pub widgets: Vec<crate::widgets::Widget>,
+    /// The drop-down terminal.
+    pub visor: crate::visor::Settings,
 }
 
 #[derive(Deserialize)]
@@ -35,6 +37,8 @@ struct File {
     links: toml::Table,
     #[serde(default)]
     widgets: toml::Table,
+    #[serde(default)]
+    visor: toml::Table,
 }
 
 impl Config {
@@ -62,7 +66,8 @@ impl Config {
             links.push((word.to_lowercase(), address.to_string()));
         }
         let widgets = crate::widgets::from_settings(&file.widgets)?;
-        Ok((Config { bindings, timeout, links, widgets }, tree))
+        let visor = crate::visor::Settings::from_table(&file.visor)?;
+        Ok((Config { bindings, timeout, links, widgets, visor }, tree))
     }
 }
 
@@ -130,6 +135,19 @@ mod tests {
         let bound: Vec<(&str, &str)> = config.bindings.iter().map(|binding| (binding.keys.as_str(), binding.command.as_str())).collect();
         assert_eq!(bound, [("alt+k", "clutch palette")]);
         assert!(config.links.iter().any(|(word, address)| word == "gh" && address.contains("{}")));
+    }
+
+    #[test]
+    fn the_example_visor_lines_read() {
+        // The bindings for it, and its settings, with the # taken off.
+        let uncommented = |line: &str| line.strip_prefix("# ").unwrap_or(line).to_string() + "\n";
+        let keys: String = EXAMPLE.lines().filter(|line| line.starts_with("# \"ctrl+") && line.contains("clutch ")).map(uncommented).collect();
+        let settings: String = EXAMPLE.lines().skip_while(|line| *line != "# [visor]").map(uncommented).collect();
+        let (config, _) = Config::parse(&format!("[bind]\n{keys}\n{settings}")).unwrap();
+        assert_eq!(config.bindings.len(), 10);
+        assert_eq!(config.bindings[1].command, "clutch palette '>visor'");
+        let plain = crate::visor::Settings::default();
+        assert_eq!((config.visor.shape, &config.visor.run), (plain.shape, &plain.run));
     }
 
     #[test]

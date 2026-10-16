@@ -6,11 +6,17 @@
     enable() {
         this._dbus = Gio.DBusExportedObject.wrapJSObject(INTERFACE, this);
         this._dbus.export(Gio.DBus.session, '/io/github/jeffjose/Clutch');
-        this._mapped = global.window_manager.connect('map', (_wm, actor) => this._place(actor.meta_window));
+        this._mapped = global.window_manager.connect('map', (_wm, actor) => {
+            this._place(actor.meta_window);
+            this._visorMapped(actor.meta_window);
+        });
+        this._focused = global.display.connect('notify::focus-window', () => this._visorFocused());
     }
 
     disable() {
         global.window_manager.disconnect(this._mapped);
+        global.display.disconnect(this._focused);
+        this._visor = null;
         this._dbus.unexport();
         this._dbus = null;
     }
@@ -22,7 +28,7 @@
     // The windows a taskbar would show, the one used last first.
     _windows() {
         const all = global.display.get_tab_list(Meta.TabList.NORMAL_ALL, null);
-        return all.filter(window => !window.is_skip_taskbar() && !this._ours(window));
+        return all.filter(window => !window.is_skip_taskbar() && !this._ours(window) && !this._isVisor(window));
     }
 
     // The shell numbers its windows from somewhere at random, which can be
@@ -127,4 +133,135 @@
 
     GoTo(workspace) {
         global.workspace_manager.get_workspace_by_index(workspace)?.activate(global.get_current_time());
+    }
+
+    // visor: a terminal of a class of its own, brought in from an edge
+    // of the screen and sent away again. clutch says where, in parts of
+    // the screen, and what to do: toggle, show, hide, or only say. The
+    // answer is where it is then: shown, hidden, or absent, when there
+    // is no such window and clutch is to start one. That one is put in
+    // place as it comes up.
+    Visor(asked) {
+        const want = JSON.parse(asked);
+        this._visor = want;
+        const window = this._visorWindow();
+        if (!window) {
+            this._visorPending = want.do === 'toggle' || want.do === 'show';
+            return 'absent';
+        }
+        const shown = !window.minimized;
+        if (want.do === 'state')
+            return shown ? 'shown' : 'hidden';
+        const away = want.do === 'hide' || (want.do === 'toggle' && shown && global.display.focus_window === window);
+        if (away) {
+            if (shown)
+                this._visorHide(window);
+            return 'hidden';
+        }
+        this._visorShow(window, !shown);
+        return 'shown';
+    }
+
+    _isVisor(window) {
+        return !!this._visor && window.get_wm_class() === this._visor.class;
+    }
+
+    _visorWindow() {
+        const windows = global.get_window_actors().map(actor => actor.meta_window);
+        return windows.find(window => this._isVisor(window)) ?? null;
+    }
+
+    _visorMapped(window) {
+        if (!window || !this._visorPending || !this._isVisor(window))
+            return;
+        this._visorPending = false;
+        this._visorShow(window, false);
+    }
+
+    // Away, when another window takes the keyboard, if clutch says so.
+    // The box coming up over it does not count.
+    _visorFocused() {
+        const focus = global.display.focus_window;
+        if (!this._visor?.blur || !focus || this._isVisor(focus) || this._ours(focus))
+            return;
+        const window = this._visorWindow();
+        if (window && !window.minimized && focus.get_transient_for() !== window)
+            this._visorHide(window);
+    }
+
+    _visorShow(window, slide) {
+        const want = this._visor;
+        const display = global.display;
+        const monitor = want.main ? display.get_primary_monitor() : display.get_current_monitor();
+        const actor = window.get_compositor_private();
+        if (window.minimized) {
+            if (actor)
+                Main.wm.skipNextEffect(actor);
+            window.unminimize();
+        }
+        if (window.is_fullscreen())
+            window.unmake_fullscreen();
+        const maximized = window.get_maximized ? window.get_maximized() !== 0 : window.is_maximized();
+        if (maximized) {
+            try {
+                window.unmaximize(Meta.MaximizeFlags.BOTH);
+            } catch (_) {
+                window.unmaximize();
+            }
+        }
+        if (window.get_monitor() !== monitor)
+            window.move_to_monitor(monitor);
+        const area = window.get_work_area_for_monitor(monitor);
+        const [x, y, w, h] = want.rect;
+        const gap = want.gap ?? 0;
+        const left = area.x + Math.round(x * area.width) + gap;
+        const top = area.y + Math.round(y * area.height) + gap;
+        const width = Math.max(1, Math.round(w * area.width) - 2 * gap);
+        const height = Math.max(1, Math.round(h * area.height) - 2 * gap);
+        window.move_resize_frame(true, left, top, width, height);
+        if (!window.is_above())
+            window.make_above();
+        if (!window.is_on_all_workspaces())
+            window.stick();
+        Main.activateWindow(window);
+        if (slide && want.slide && actor)
+            this._visorSlide(actor, want.edge, width, height, true, null);
+    }
+
+    _visorHide(window) {
+        const actor = window.get_compositor_private();
+        const away = () => {
+            if (actor) {
+                actor.translation_x = 0;
+                actor.translation_y = 0;
+                actor.opacity = 255;
+                Main.wm.skipNextEffect(actor);
+            }
+            window.minimize();
+        };
+        if (!this._visor?.slide || !actor)
+            return away();
+        const frame = window.get_frame_rect();
+        this._visorSlide(actor, this._visor.edge, frame.width, frame.height, false, away);
+    }
+
+    // Slide the terminal in from off its edge, or out to it; from the
+    // middle, it fades.
+    _visorSlide(actor, edge, width, height, coming, done) {
+        const off = {top: [0, -height], bottom: [0, height], left: [-width, 0], right: [width, 0]}[edge] ?? [0, 0];
+        const fade = off[0] === 0 && off[1] === 0 ? 0 : 255;
+        const out = [off[0], off[1], fade];
+        const [from, to] = coming ? [out, [0, 0, 255]] : [[0, 0, 255], out];
+        actor.remove_all_transitions();
+        actor.translation_x = from[0];
+        actor.translation_y = from[1];
+        actor.opacity = from[2];
+        actor.ease({
+            translation_x: to[0],
+            translation_y: to[1],
+            opacity: to[2],
+            duration: 160,
+            mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            onStopped: () => done?.(),
+        });
     }

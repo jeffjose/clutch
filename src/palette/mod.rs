@@ -495,6 +495,14 @@ impl Stock {
         clutch(glyph::PAUSE, "Pause clutch", Action::Clutch("pause"));
         clutch(glyph::PLAY, "Resume clutch", Action::Clutch("resume"));
         clutch(glyph::REFRESH, "Refresh project icons", Action::ForgetPictures);
+        // The drop-down terminal, to put in each of its shapes.
+        let visor = crate::visor::SHAPES.iter().map(|(name, title, _)| (format!("shape {name}"), *title));
+        let more = [("hide", "Hide"), ("grow", "Next size"), ("bigger", "Bigger"), ("smaller", "Smaller"), ("full", "Full screen and back"), ("reset", "As the settings say")];
+        for (words, title) in visor.chain(more.iter().map(|(words, title)| (words.to_string(), *title))) {
+            let mut item = Item::new(glyph::RUN, &format!("Visor: {title}"), "", "visor", Action::Shell(format!("clutch visor {words}")));
+            item.find = format!("visor terminal drop-down {title} {words}");
+            stock.commands.push(item);
+        }
         // Other words each control is known by.
         let also = ["wifi network internet", "volume audio speakers output", "microphone mute", "", "do not disturb notifications", "redshift warm", "pause music media", "skip track media", "back track media"];
         for (at, name) in controls::NAMES.iter().enumerate() {
@@ -840,7 +848,7 @@ fn color_item((palette, hue, shade): (usize, usize, usize)) -> Item {
 /// started by systemd, whose PATH is short, and what is started from the
 /// box (an editor, a terminal) would otherwise go without what your
 /// shell sets up, mise's tools say.
-fn spawn(line: &str) {
+pub(crate) fn spawn(line: &str) {
     let mut command = Command::new("/bin/sh");
     command.arg("-c").arg(config::with_clutch(line));
     start(command);

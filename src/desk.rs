@@ -431,16 +431,84 @@ impl X11 {
         if maximized {
             self.set_maximized(window, false);
         }
-        // Where the frame goes, and how large the window in it is.
+        self.move_resize(window, (left, top, width, height), edges);
+        if maximized {
+            self.set_maximized(window, true);
+        }
+        Some(())
+    }
+
+    /// Move a window's frame to a rectangle of the screen, and make the
+    /// window in it as large as the frame leaves room for.
+    fn move_resize(&self, window: u32, (left, top, width, height): Area, edges: [i32; 4]) {
         const X_Y_WIDTH_HEIGHT: u32 = 0xF << 8;
         const NORTH_WEST: u32 = 1;
         let flags = NORTH_WEST | X_Y_WIDTH_HEIGHT | FROM_PAGER << 12;
         let inner = ((width - edges[0] - edges[1]).max(1) as u32, (height - edges[2] - edges[3]).max(1) as u32);
         self.ask(window, "_NET_MOVERESIZE_WINDOW", [flags, left as u32, top as u32, inner.0, inner.1]);
-        if maximized {
-            self.set_maximized(window, true);
+    }
+
+    /// Put a window on a rectangle of the screen, frame and all.
+    pub fn put(&self, window: u32, area: Area) {
+        if self.maximized(window) {
+            self.set_maximized(window, false);
         }
-        Some(())
+        let edges = self.frame(window).map_or([0; 4], |(_, edges)| edges);
+        self.move_resize(window, area, edges);
+    }
+
+    /// The window of a program by its class, as WM_CLASS has it, among
+    /// all the window manager keeps: those off the taskbar as well.
+    pub fn find_class(&self, class: &str) -> Option<u32> {
+        let all = self.numbers(self.root, "_NET_CLIENT_LIST", 4096);
+        all.into_iter().find(|id| self.bytes(*id, "WM_CLASS").split(|byte| *byte == 0).any(|name| name == class.as_bytes()))
+    }
+
+    /// Whether a window is minimized.
+    pub fn hidden(&self, window: u32) -> bool {
+        self.numbers(window, "_NET_WM_STATE", 16).contains(&self.atom("_NET_WM_STATE_HIDDEN"))
+    }
+
+    pub fn minimize(&self, window: u32) {
+        const ICONIC: u32 = 3;
+        self.ask(window, "WM_CHANGE_STATE", [ICONIC, 0, 0, 0, 0]);
+    }
+
+    /// Keep a window over the others and on every workspace, and leave
+    /// it off the taskbar and the pager.
+    pub fn keep_up(&self, window: u32) {
+        const ADD: u32 = 1;
+        for [one, two] in [["_NET_WM_STATE_ABOVE", "_NET_WM_STATE_STICKY"], ["_NET_WM_STATE_SKIP_TASKBAR", "_NET_WM_STATE_SKIP_PAGER"]] {
+            self.ask(window, "_NET_WM_STATE", [ADD, self.atom(one), self.atom(two), FROM_PAGER, 0]);
+        }
+        self.ask(window, "_NET_WM_DESKTOP", [u32::MAX, FROM_PAGER, 0, 0, 0]);
+    }
+
+    /// The main monitor, or the first where none is.
+    fn main_monitor(&self) -> Option<Area> {
+        let reply = self.conn.randr_get_monitors(self.root, true).ok()?.reply().ok()?;
+        let monitor = reply.monitors.iter().find(|monitor| monitor.primary).or(reply.monitors.first())?;
+        Some((i32::from(monitor.x), i32::from(monitor.y), i32::from(monitor.width), i32::from(monitor.height)))
+    }
+
+    /// Where windows may go on the main monitor, or the one in use: all
+    /// of it but what panels keep for themselves.
+    pub fn work_area(&self, main: bool) -> Option<Area> {
+        let monitor = if main { self.main_monitor() } else { self.monitor_in_use() }?;
+        let desktop = self.numbers(self.root, "_NET_CURRENT_DESKTOP", 1).first().copied().unwrap_or(0) as usize;
+        let areas = self.numbers(self.root, "_NET_WORKAREA", 4096);
+        // The window manager says it for all the monitors together, so
+        // only where that cuts into this one counts.
+        let area = areas.chunks_exact(4).nth(desktop).and_then(|area| <[u32; 4]>::try_from(area).ok());
+        let Some([x, y, width, height]) = area.map(|area| area.map(|n| n as i32)) else {
+            return Some(monitor);
+        };
+        let (left, top) = (monitor.0.max(x), monitor.1.max(y));
+        let (right, bottom) = ((monitor.0 + monitor.2).min(x + width), (monitor.1 + monitor.3).min(y + height));
+        match right > left && bottom > top {
+            true => Some((left, top, right - left, bottom - top)),
+            false => Some(monitor),
+        }
     }
 
     /// The names of the workspaces, and which one is in view.

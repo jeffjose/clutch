@@ -13,10 +13,10 @@ const NAME: &str = "io.github.jeffjose.Clutch";
 
 /// Which writing of the extension this is. The shell keeps running the
 /// one it started with, and says which that was.
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 
 /// What it answers to.
-const INTERFACE: &str = r#"const VERSION = 3;
+const INTERFACE: &str = r#"const VERSION = 4;
 const INTERFACE = `<node><interface name="io.github.jeffjose.Clutch">
   <method name="State"><arg type="s" direction="out"/></method>
   <method name="Activate"><arg type="u" direction="in"/></method>
@@ -26,18 +26,20 @@ const INTERFACE = `<node><interface name="io.github.jeffjose.Clutch">
   <method name="MoveToMonitor"><arg type="u" direction="in"/><arg type="b" direction="in"/></method>
   <method name="SendTo"><arg type="u" direction="in"/><arg type="u" direction="in"/></method>
   <method name="GoTo"><arg type="u" direction="in"/></method>
+  <method name="Visor"><arg type="s" direction="in"/><arg type="s" direction="out"/></method>
 </interface></node>`;
 "#;
 
 /// The same extension is written two ways: the shell took to modules
 /// with version 45, and reads nothing else since.
-const MODULES: &str = "import Gio from 'gi://Gio';
+const MODULES: &str = "import Clutter from 'gi://Clutter';
+import Gio from 'gi://Gio';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 ";
-const BEFORE_MODULES: &str = "const {Gio, Meta, Shell} = imports.gi;
+const BEFORE_MODULES: &str = "const {Clutter, Gio, Meta, Shell} = imports.gi;
 const Main = imports.ui.main;
 ";
 const BODY: &str = include_str!("../assets/extension.js");
@@ -185,14 +187,15 @@ mod tests {
     #[test]
     fn written_both_ways() {
         let new = source(46);
-        assert!(new.starts_with("import Gio from 'gi://Gio';"));
+        assert!(new.starts_with("import Clutter from 'gi://Clutter';"));
         assert!(new.contains("export default class Clutch extends Extension {"));
         assert!(!new.contains("function init()"));
         let old = source(42);
-        assert!(old.starts_with("const {Gio, Meta, Shell} = imports.gi;"));
+        assert!(old.starts_with("const {Clutter, Gio, Meta, Shell} = imports.gi;"));
         assert!(old.contains("function init()") && !old.contains("import "));
         for source in [&new, &old] {
             assert!(source.contains("<method name=\"State\">") && source.contains("    State() {"));
+            assert!(source.contains("<method name=\"Visor\">") && source.contains("    Visor(asked) {"));
         }
         // Written out where asked, for a JavaScript engine to check.
         if let Some(dir) = env::var_os("CLUTCH_EXTENSION_TO") {

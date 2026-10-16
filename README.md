@@ -202,6 +202,61 @@ the box on screen with keyboard focus. It needs no sudo, but takes
 effect after you log out and back in. Without it, and on other Wayland
 desktops, the box offers only applications, bindings and shell commands.
 
+## visor
+
+visor is a drop-down terminal: Ghostty running `screen -dRR`, brought
+in from an edge of the screen at a key and sent away again at the same
+key.
+
+```toml
+[bind]
+"ctrl+space" = "clutch visor"
+"ctrl+shift+space" = "clutch palette '>visor'"
+"ctrl+super+left" = "clutch visor left"
+"ctrl+super+g" = "clutch visor grow"
+```
+
+`clutch visor` starts the terminal if there is none, brings it in if it
+is away, gives it the keyboard if it is in but behind, and sends it away
+if it is in and has the keyboard. The rest move it, and bring it in if
+it is away:
+
+```sh
+clutch visor left              # to an edge: top, bottom, left, right, center
+clutch visor right-third       # a shape: top-centered, left-half, right-half,
+                               # right-third, corner, floating, peek
+clutch visor bigger            # or smaller, by a tenth of the screen
+clutch visor grow              # its next size: 40%, 70%, 100%, and round again
+clutch visor full              # full screen, and back
+clutch visor reset             # as the settings say
+clutch visor status            # where it is, in a line
+```
+
+Where it was moved to is kept until the settings are saved again. In the
+box, `>visor` lists its shapes, so Ctrl+Shift+Space, a word of the shape
+and Enter puts it there. The settings say where it starts:
+
+```toml
+[visor]
+shape = "top"            # or edge, width, height and align, each said
+height = "40%"
+gap = 0                  # pixels between it and the edges of the screen
+grow = ["40%", "70%", "100%"]
+monitor = "in use"       # where the pointer is, or "main"
+slide = true             # on GNOME
+hide_on_click_away = false
+```
+
+The example settings have them all. The terminal is known by its class,
+`io.github.jeffjose.visor`, so it is a Ghostty of its own and your other
+Ghostty windows are left alone; `run` says what starts it, for a
+different terminal or a command other than screen. It stays above the
+other windows and on every workspace, and is left out of the box's
+windows. On X11 it is off the taskbar too, and comes in at once. On GNOME
+the shell's extension moves it, which needs the extension as this clutch
+writes it: run `clutch setup` once more and log out and in. It slides in
+there, but it is still in the shell's Alt+Tab.
+
 ## Without sudo
 
 If the udev rule can't be installed, clutch can't grab the keyboards. On

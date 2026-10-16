@@ -24,10 +24,18 @@
 "alt+k" = "clutch palette"
 # "super+k" = "clutch palette"
 
-# A drop-down terminal:
-# "ctrl+space" = "tilix --quake"
-#   on GNOME, with the ddterm extension:
-# "ctrl+space" = "gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/ddterm --method com.github.amezin.ddterm.Extension.Toggle"
+# A drop-down terminal, visor: Ghostty running screen, brought in from an
+# edge of the screen and sent away again. [visor] below says where.
+# "ctrl+space" = "clutch visor"
+# "ctrl+shift+space" = "clutch palette '>visor'"   # its shapes, in the box
+# "ctrl+super+up" = "clutch visor top"
+# "ctrl+super+down" = "clutch visor bottom"
+# "ctrl+super+left" = "clutch visor left"
+# "ctrl+super+right" = "clutch visor right"
+# "ctrl+super+equal" = "clutch visor bigger"
+# "ctrl+super+minus" = "clutch visor smaller"
+# "ctrl+super+g" = "clutch visor grow"
+# "ctrl+super+f" = "clutch visor full"
 
 # A sequence:
 # "super+space t" = "xterm"
@@ -74,3 +82,18 @@ yt = "https://www.youtube.com/results?search_query={}"
 # warn = "text > 80"        # amber, when this holds
 # bad = "text > 95"         # red
 # open = "xdg-open ~"       # what a click runs
+
+# The drop-down terminal. Each line here is as it is when left out.
+# [visor]
+# shape = "top"             # top, top-centered, bottom, left-half, right-half,
+#                           # right-third, corner, floating, full, peek
+# edge = "top"              # or say it yourself: top, bottom, left, right, center
+# width = "100%"
+# height = "40%"
+# align = "center"          # where it does not fill its edge: left, center, right
+# gap = 0                   # pixels between it and the edges of the screen
+# grow = ["40%", "70%", "100%"]   # the sizes `clutch visor grow` goes through
+# monitor = "in use"        # the one the pointer is on, or "main"
+# slide = true              # in from its edge, and out to it (on GNOME)
+# hide_on_click_away = false
+# run = "ghostty --class=io.github.jeffjose.visor --gtk-single-instance=false --window-decoration=false -e screen -dRR"

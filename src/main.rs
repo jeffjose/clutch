@@ -10,6 +10,7 @@ mod palette;
 mod setup;
 mod style;
 mod timing;
+mod visor;
 mod widgets;
 
 use std::io::{Read, Write};
@@ -27,6 +28,9 @@ clutch: keys that are yours before any program's.
   clutch raise NAME [COMMAND]   go to a program's window, or start it
   clutch move-monitor [prev]    the window in front, to the next monitor
 
+A drop-down terminal: Ghostty running screen, at an edge of the screen.
+
+{VISOR}
 These need no clutch running; any key bound anywhere can start them.
 
   clutch setup     put clutch on this machine and start it (asks for sudo, once)
@@ -170,10 +174,11 @@ fn main() {
         "windows" => palette::run("@"),
         "move-monitor" => move_monitor(arguments.next().as_deref()),
         "raise" => raise(arguments.collect()),
+        "visor" => visor::run(arguments.collect()),
         "status" | "pause" | "resume" | "reload" | "fix" => tell(&command),
         "timings" | "telemetry" => timing::show(arguments.next().and_then(|count| count.parse().ok())),
         "" | "help" | "-h" | "--help" => {
-            print!("{HELP}");
+            print!("{}", HELP.replace("{VISOR}", visor::HELP));
             Ok(())
         }
         "-V" | "--version" => {
