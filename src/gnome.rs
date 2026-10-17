@@ -117,7 +117,8 @@ pub fn shortcuts(bindings: &[Binding]) -> (Vec<Shortcut>, Vec<Note>) {
     let mut skipped = |keys: &str, why: &str| {
         notes.push(Note { keys: keys.into(), what: format!("skipped: {why}"), fix: None })
     };
-    for binding in bindings {
+    // visor's own keys are the extension's to take, while it is in.
+    for binding in bindings.iter().filter(|binding| !binding.while_visor) {
         let keys = binding.keys.clone();
         let sequence = parse_sequence(&keys).unwrap_or_default();
         if sequence.len() != 1 {
@@ -363,7 +364,7 @@ mod tests {
     }
 
     fn binding(keys: &str, command: &str) -> Binding {
-        Binding { keys: keys.into(), command: command.into() }
+        Binding { keys: keys.into(), command: command.into(), while_visor: false }
     }
 
     #[test]

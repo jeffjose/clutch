@@ -26,16 +26,9 @@
 
 # A drop-down terminal, visor: Ghostty running screen, brought in from an
 # edge of the screen and sent away again. [visor] below says where.
+# While it is in, Super and the arrows move it; [visor.keys] says more.
 # "ctrl+space" = "clutch visor"
-# "ctrl+shift+space" = "clutch palette '>visor'"   # its shapes, in the box
-# "ctrl+super+up" = "clutch visor top"
-# "ctrl+super+down" = "clutch visor bottom"
-# "ctrl+super+left" = "clutch visor left"
-# "ctrl+super+right" = "clutch visor right"
-# "ctrl+super+equal" = "clutch visor bigger"
-# "ctrl+super+minus" = "clutch visor smaller"
-# "ctrl+super+g" = "clutch visor grow"
-# "ctrl+super+f" = "clutch visor full"
+# "ctrl+shift+space" = "clutch palette visor"   # its shapes, in the box
 
 # A sequence:
 # "super+space t" = "xterm"
@@ -97,3 +90,19 @@ yt = "https://www.youtube.com/results?search_query={}"
 # slide = true              # in from its edge, and out to it (on GNOME)
 # hide_on_click_away = false
 # run = "ghostty --class=io.github.jeffjose.visor --gtk-single-instance=false --window-decoration=false -e screen -dRR"
+#
+# Its keys, which are its only while it is in: away, they are the
+# desktop's as ever. On GNOME the shell's own keys on them (Super and an
+# arrow tiles a window) are set aside while it is in, and put back as it
+# goes. Keys of your own here take the place of all of these.
+# [visor.keys]
+# "super+left" = "left"
+# "super+right" = "right"
+# "super+up" = "top"
+# "super+down" = "bottom"
+# "super+c" = "center"
+# "super+equal" = "bigger"
+# "super+minus" = "smaller"
+# "super+g" = "grow"
+# "super+f" = "full"
+# "super+escape" = "hide"

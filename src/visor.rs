@@ -115,8 +115,58 @@ pub const SHAPES: &[(&str, &str, Shape)] = &[
     ("peek", "Peek strip", shape(Edge::Top, 12, 100, Align::Middle)),
 ];
 
-fn named(name: &str) -> Option<Shape> {
+pub fn named(name: &str) -> Option<Shape> {
     SHAPES.iter().find(|(word, _, _)| *word == name).map(|(_, _, shape)| *shape)
+}
+
+/// The letter that picks a shape in the box, with Alt.
+pub fn letter_of(name: &str) -> Option<char> {
+    const LETTERS: [(&str, char); 10] = [
+        ("top", 't'),
+        ("top-centered", 'c'),
+        ("bottom", 'b'),
+        ("left-half", 'l'),
+        ("right-half", 'r'),
+        ("right-third", 'i'),
+        ("corner", 'k'),
+        ("floating", 'f'),
+        ("full", 'u'),
+        ("peek", 'p'),
+    ];
+    LETTERS.iter().find(|(word, _)| *word == name).map(|(_, letter)| *letter)
+}
+
+/// A drawing of a shape: a screen, `size` across, with the part the
+/// terminal takes lit.
+pub fn picture(shape: Shape, size: usize) -> crate::palette::canvas::Icon {
+    const CLEAR: u32 = 0x0000_0000;
+    const BEZEL: u32 = 0xFF1B_2029;
+    const SCREEN: u32 = 0xFF3A_4554;
+    const LIT: u32 = 0xFF3C_C4B7;
+    let size = size.max(8);
+    let mut pixels = vec![CLEAR; size * size];
+    // A screen sixteen by ten, in the middle of the square.
+    let (width, height) = (size, size * 10 / 16);
+    let top = (size - height) / 2;
+    let border = (size / 24).max(1);
+    let (inner_w, inner_h) = (width - 2 * border, height - 2 * border);
+    let [left, up, across, down] = shape.rect();
+    let lit = |x: usize, y: usize| {
+        let (fx, fy) = ((x as f64 + 0.5) / inner_w as f64, (y as f64 + 0.5) / inner_h as f64);
+        fx >= left && fx < left + across && fy >= up && fy < up + down
+    };
+    for y in 0..height {
+        for x in 0..width {
+            let inside = x >= border && x < width - border && y >= border && y < height - border;
+            let color = match inside {
+                false => BEZEL,
+                true if lit(x - border, y - border) => LIT,
+                true => SCREEN,
+            };
+            pixels[(top + y) * size + x] = color;
+        }
+    }
+    crate::palette::canvas::Icon { width: size, height: size, pixels }
 }
 
 impl Shape {
@@ -190,6 +240,29 @@ pub struct Settings {
     pub monitor: Monitor,
     pub slide: bool,
     pub hide_on_click_away: bool,
+    /// The keys that move it while it is in, and what each does: the
+    /// keys as written, and the word after `clutch visor`.
+    pub keys: Vec<(String, String)>,
+}
+
+/// The keys it has while it is in, unless the settings say others.
+const KEYS: [(&str, &str); 10] = [
+    ("super+left", "left"),
+    ("super+right", "right"),
+    ("super+up", "top"),
+    ("super+down", "bottom"),
+    ("super+c", "center"),
+    ("super+equal", "bigger"),
+    ("super+minus", "smaller"),
+    ("super+g", "grow"),
+    ("super+f", "full"),
+    ("super+escape", "hide"),
+];
+
+/// The words a key may say, after `clutch visor`.
+fn is_word(word: &str) -> bool {
+    let plain = ["toggle", "show", "hide", "bigger", "smaller", "grow", "full", "reset"];
+    plain.contains(&word) || Edge::parse(word).is_some() || named(word).is_some()
 }
 
 fn run_for(class: &str) -> String {
@@ -207,6 +280,7 @@ impl Default for Settings {
             monitor: Monitor::InUse,
             slide: true,
             hide_on_click_away: false,
+            keys: KEYS.iter().map(|(keys, word)| (keys.to_string(), word.to_string())).collect(),
         }
     }
 }
@@ -241,8 +315,8 @@ impl Settings {
                 Some(_) => Err(format!("visor.{key}: true or false")),
             }
         };
-        const KNOWN: [&str; 12] =
-            ["run", "class", "shape", "edge", "width", "height", "align", "gap", "grow", "monitor", "slide", "hide_on_click_away"];
+        const KNOWN: [&str; 13] =
+            ["run", "class", "shape", "edge", "width", "height", "align", "gap", "grow", "monitor", "slide", "hide_on_click_away", "keys"];
         if let Some(key) = table.keys().find(|key| !KNOWN.contains(&key.as_str())) {
             return Err(format!("visor.{key}: there is no such setting (it has {})", KNOWN.join(", ")));
         }
@@ -297,6 +371,26 @@ impl Settings {
         }
         settings.slide = yes("slide", true)?;
         settings.hide_on_click_away = yes("hide_on_click_away", false)?;
+        // Keys of its own take the place of all those it has otherwise.
+        match table.get("keys") {
+            None => {}
+            Some(toml::Value::Table(keys)) => {
+                settings.keys = Vec::new();
+                for (keys, word) in keys {
+                    let word = word.as_str().ok_or(format!("visor.keys.\"{keys}\": what it does must be in quotes"))?;
+                    if !is_word(word) {
+                        return Err(format!("visor.keys.\"{keys}\": \"{word}\" is not something visor does (clutch visor help)"));
+                    }
+                    match crate::keys::parse_sequence(keys) {
+                        Ok(sequence) if sequence.len() == 1 => {}
+                        Ok(_) => return Err(format!("visor.keys.\"{keys}\": one chord, not keys one after another")),
+                        Err(e) => return Err(format!("visor.keys.\"{keys}\": {e}")),
+                    }
+                    settings.keys.push((keys.clone(), word.to_string()));
+                }
+            }
+            Some(_) => return Err("visor.keys: a table of keys, as [visor.keys] \"super+left\" = \"left\"".into()),
+        }
         Ok(settings)
     }
 
@@ -427,12 +521,7 @@ pub fn run(arguments: Vec<String>) -> Result<(), String> {
         "show" => screen.show(&settings, now.shape()),
         "hide" => screen.hide(&settings, now.shape()),
         "status" => {
-            let (state, on) = screen.state(&settings)?;
-            match state {
-                State::Absent => println!("visor: not running ({on}); `clutch visor` starts it"),
-                State::Shown => println!("visor: shown, {} ({on})", now.shape().said()),
-                State::Hidden => println!("visor: hidden, {} ({on})", now.shape().said()),
-            }
+            println!("visor: {}", status_line(&settings));
             Ok(())
         }
         "help" | "-h" | "--help" => {
@@ -487,11 +576,11 @@ impl Screen {
     fn toggle(&self, settings: &Settings, shape: Shape) -> Result<(), String> {
         match self {
             Screen::Gnome => match gnome(settings, "toggle", shape)?.as_str() {
-                "absent" => start(settings),
+                "absent" => gnome_start(settings, shape),
                 _ => Ok(()),
             },
             Screen::X11(x) => match x.find_class(&settings.class) {
-                Some(window) if !x.hidden(window) && x.active() == Some(window) => Ok(x.minimize(window)),
+                Some(window) if !x.hidden(window) && x.active() == Some(window) => Ok(x11_hide(x, window, settings, shape.edge)),
                 Some(window) => Ok(x11_show(x, window, settings, shape)),
                 None => x11_start(x, settings, shape),
             },
@@ -501,7 +590,7 @@ impl Screen {
     fn show(&self, settings: &Settings, shape: Shape) -> Result<(), String> {
         match self {
             Screen::Gnome => match gnome(settings, "show", shape)?.as_str() {
-                "absent" => start(settings),
+                "absent" => gnome_start(settings, shape),
                 _ => Ok(()),
             },
             Screen::X11(x) => match x.find_class(&settings.class) {
@@ -515,8 +604,8 @@ impl Screen {
         match self {
             Screen::Gnome => gnome(settings, "hide", shape).map(drop),
             Screen::X11(x) => {
-                if let Some(window) = x.find_class(&settings.class) {
-                    x.minimize(window);
+                if let Some(window) = x.find_class(&settings.class).filter(|window| !x.hidden(*window)) {
+                    x11_hide(x, window, settings, shape.edge);
                 }
                 Ok(())
             }
@@ -530,25 +619,107 @@ fn start(settings: &Settings) -> Result<(), String> {
     Ok(())
 }
 
-/// What is asked of GNOME's shell, as the extension reads it.
-fn request(settings: &Settings, what: &str, shape: Shape) -> String {
-    let [left, top, width, height] = shape.rect();
-    format!(
-        "{{\"do\":\"{what}\",\"class\":\"{}\",\"rect\":[{left:.4},{top:.4},{width:.4},{height:.4}],\"edge\":\"{}\",\
-         \"gap\":{},\"main\":{},\"slide\":{},\"blur\":{}}}",
-        settings.class,
-        shape.edge.name(),
-        settings.gap,
-        settings.monitor == Monitor::Main,
-        settings.slide,
-        settings.hide_on_click_away,
-    )
+/// There is none: GNOME's shell starts it, where it can, so that it can
+/// leave it out of Alt+Tab and the overview; clutch, where it cannot.
+fn gnome_start(settings: &Settings, shape: Shape) -> Result<(), String> {
+    match gnome(settings, "start", shape)?.as_str() {
+        "starting" => Ok(()),
+        _ => start(settings),
+    }
+}
+
+/// For the running clutch, which takes visor's keys only while the
+/// terminal is in: how to tell, as one of them is pressed.
+pub fn asker(settings: Settings) -> Box<dyn FnMut() -> bool + Send> {
+    Box::new(move || Screen::open().and_then(|screen| screen.state(&settings)).is_ok_and(|(state, _)| state == State::Shown))
+}
+
+/// For the running clutch on X11: send the terminal away when another
+/// window takes the keyboard, where the settings say to. They are read
+/// each time, so that a change to them counts at once.
+pub fn watch(settings: std::sync::Arc<std::sync::Mutex<Settings>>) {
+    if env::var_os("WAYLAND_DISPLAY").is_some() {
+        return;
+    }
+    std::thread::spawn(move || loop {
+        if let Some(x) = X11::open() {
+            x.each_active(|x, active| {
+                let Ok(settings) = settings.lock().map(|settings| settings.clone()) else { return };
+                let (Some(active), true) = (active, settings.hide_on_click_away) else { return };
+                let Some(window) = x.find_class(&settings.class) else { return };
+                // Its own dialogs are of its class, and the box is clutch's.
+                let class = x.class_of(active);
+                if active == window || x.hidden(window) || class == settings.class || class == "clutch" {
+                    return;
+                }
+                x11_hide(x, window, &settings, Now::load(&settings).shape().edge);
+            });
+        }
+        // The display went, or was not there yet.
+        std::thread::sleep(Duration::from_secs(5));
+    });
+}
+
+/// Where it is, in a line, for `clutch status`.
+pub fn status_line(settings: &Settings) -> String {
+    let shape = Now::load(settings).shape();
+    match Screen::open().and_then(|screen| screen.state(settings)) {
+        Ok((State::Absent, _)) => "not running; `clutch visor` starts it".into(),
+        Ok((State::Shown, on)) => format!("shown, {} ({on})", shape.said()),
+        Ok((State::Hidden, on)) => format!("hidden, {} ({on})", shape.said()),
+        Err(why) => why,
+    }
+}
+
+/// What is asked of GNOME's shell, as the extension reads it. With it
+/// go the keys the shell is to take while the terminal is in, and how
+/// to start the terminal, which the shell does itself where it can so
+/// as to leave it out of Alt+Tab.
+fn request(settings: &Settings, what: &str, shape: Shape, keys: bool) -> String {
+    let round = |part: f64| (part * 10_000.0).round() / 10_000.0;
+    let keys: Vec<[String; 2]> = match keys {
+        true => settings.keys.iter().filter_map(|(keys, word)| {
+            let chord = *crate::keys::parse_sequence(keys).ok()?.first()?;
+            Some([crate::gnome::accelerator(chord)?, word.clone()])
+        }).collect(),
+        false => Vec::new(),
+    };
+    let clutch = env::current_exe().map(|exe| exe.to_string_lossy().into_owned()).unwrap_or_else(|_| "clutch".into());
+    // Your shell's PATH, which is slow to ask, only to start it.
+    let path = match what {
+        "start" => crate::palette::login_env().iter().find(|(name, _)| name == "PATH").map(|(_, path)| path.clone()),
+        _ => None,
+    };
+    let mut asked = serde_json::json!({
+        "do": what,
+        "class": settings.class,
+        "rect": shape.rect().map(round),
+        "edge": shape.edge.name(),
+        "gap": settings.gap,
+        "main": settings.monitor == Monitor::Main,
+        "slide": settings.slide,
+        "blur": settings.hide_on_click_away,
+        "keys": keys,
+        "clutch": clutch,
+    });
+    if what == "start" {
+        asked["run"] = serde_json::json!(["/bin/sh", "-c", format!("exec {}", settings.run)]);
+        asked["path"] = serde_json::json!(path.or_else(|| env::var("PATH").ok()));
+    }
+    // It goes to gdbus in single quotes, so it may have none of its own.
+    asked.to_string().replace('\'', "\\u0027")
+}
+
+/// Whether GNOME's shell is to take visor's keys: not where clutch
+/// holds the keyboards, which takes them before the shell sees them.
+fn shell_takes_keys() -> bool {
+    !std::path::Path::new(crate::setup::RULE_PATH).exists()
 }
 
 /// Ask the extension, which answers with where the terminal now is:
 /// shown, hidden, or absent when there is none.
 fn gnome(settings: &Settings, what: &str, shape: Shape) -> Result<String, String> {
-    let asked = request(settings, what, shape);
+    let asked = request(settings, what, shape, shell_takes_keys());
     if let Some(answer) = extension::call("Visor", &[format!("'{asked}'")]).and_then(|printed| extension::unwrap(&printed)) {
         return Ok(answer);
     }
@@ -570,11 +741,66 @@ fn x11_show(x: &X11, window: u32, settings: &Settings, shape: Shape) {
     let Some(area) = x.work_area(settings.monitor == Monitor::Main) else { return };
     let place = pixels(shape.rect(), area, settings.gap as i32);
     x.keep_up(window);
-    x.put(window, place);
+    // Coming back from away, it comes in from off its edge.
+    let from = match settings.slide && x.hidden(window) {
+        true => off_edge(place, shape.edge, area),
+        false => None,
+    };
+    let (left, top, width, height) = place;
+    let start = from.map_or(place, |(x, y)| (x, y, width, height));
+    x.put(window, start);
     x.activate(window);
+    // Moves asked of a window still coming back from being minimized
+    // are lost, so it slides once it is back.
+    let began = Instant::now();
+    while x.hidden(window) && began.elapsed() < Duration::from_millis(300) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     // A window brought back from being minimized may be put back where
     // it was before it is moved.
+    x.put(window, start);
+    if let Some(from) = from {
+        slide(x, window, from, (left, top));
+    }
     x.put(window, place);
+}
+
+/// Send it away: out past its edge, where it slides, and then minimized.
+fn x11_hide(x: &X11, window: u32, settings: &Settings, edge: Edge) {
+    let area = x.work_area(settings.monitor == Monitor::Main);
+    let frame = x.frame_area(window);
+    if let (true, Some(area), Some(frame)) = (settings.slide, area, frame) {
+        if let Some(to) = off_edge(frame, edge, area) {
+            slide(x, window, (frame.0, frame.1), to);
+        }
+    }
+    x.minimize(window);
+}
+
+/// Where a window of this place is just past an edge of the area, to
+/// slide in from or out to; none from the middle, which is no edge.
+fn off_edge((left, top, width, height): (i32, i32, i32, i32), edge: Edge, (x, y, w, h): (i32, i32, i32, i32)) -> Option<(i32, i32)> {
+    match edge {
+        Edge::Top => Some((left, y - height)),
+        Edge::Bottom => Some((left, y + h)),
+        Edge::Left => Some((x - width, top)),
+        Edge::Right => Some((x + w, top)),
+        Edge::Center => None,
+    }
+}
+
+/// Move a window from one corner to the other in steps, quick at first
+/// and slowing to a stop, in about a sixth of a second.
+fn slide(x: &X11, window: u32, (from_x, from_y): (i32, i32), (to_x, to_y): (i32, i32)) {
+    const STEPS: u32 = 10;
+    for step in 1..=STEPS {
+        let done = f64::from(step) / f64::from(STEPS);
+        let eased = 1.0 - (1.0 - done).powi(3);
+        let along = |from: i32, to: i32| from + (f64::from(to - from) * eased).round() as i32;
+        x.move_to(window, along(from_x, to_x), along(from_y, to_y));
+        x.sync();
+        std::thread::sleep(Duration::from_millis(16));
+    }
 }
 
 /// Start the terminal and wait for its window, to put it in place.
@@ -705,15 +931,21 @@ mod tests {
 
     #[test]
     fn what_the_shell_is_asked() {
-        let asked = request(&Settings::default(), "toggle", named("right-third").unwrap());
-        assert_eq!(
-            asked,
-            "{\"do\":\"toggle\",\"class\":\"io.github.jeffjose.visor\",\"rect\":[0.6600,0.0000,0.3400,1.0000],\
-             \"edge\":\"right\",\"gap\":0,\"main\":false,\"slide\":true,\"blur\":false}"
-        );
+        let asked = request(&Settings::default(), "toggle", named("right-third").unwrap(), true);
         // Sent as a string in single quotes, it has none of its own.
         assert!(!asked.contains('\''));
-        let _: serde_json::Value = serde_json::from_str(&asked).unwrap();
+        let asked: serde_json::Value = serde_json::from_str(&asked).unwrap();
+        assert_eq!(asked["do"], "toggle");
+        assert_eq!(asked["class"], "io.github.jeffjose.visor");
+        assert_eq!(asked["rect"], serde_json::json!([0.66, 0.0, 0.34, 1.0]));
+        assert_eq!((&asked["edge"], &asked["gap"], &asked["slide"], &asked["blur"]), (&"right".into(), &0.into(), &true.into(), &false.into()));
+        // The keys, as GNOME writes them, and what each says to do.
+        assert_eq!(asked["keys"][0], serde_json::json!(["<Super>Left", "left"]));
+        assert_eq!(asked["keys"][5], serde_json::json!(["<Super>equal", "bigger"]));
+        assert!(asked.get("run").is_none());
+        let start: serde_json::Value = serde_json::from_str(&request(&Settings::default(), "start", FULL, false)).unwrap();
+        assert_eq!(start["run"][2], "exec ghostty --class=io.github.jeffjose.visor --gtk-single-instance=false --window-decoration=false -e screen -dRR");
+        assert_eq!(start["keys"], serde_json::json!([]));
     }
 
     #[test]

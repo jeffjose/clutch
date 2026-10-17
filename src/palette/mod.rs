@@ -219,6 +219,8 @@ enum Picture {
     Iconify(String),
     /// A color of a palette, by the palette, its hue and its shade.
     Color(usize, usize, usize),
+    /// Where visor goes in one of its shapes, by the shape's name.
+    Shape(&'static str),
 }
 
 #[derive(Clone)]
@@ -278,13 +280,15 @@ struct Item {
     /// The coding project this is a window of, if it is an editor's.
     project: Option<Project>,
     gauge: Gauge,
+    /// The letter that picks it with Alt, while it is listed.
+    letter: Option<char>,
 }
 
 impl Item {
     fn new(glyph: &'static str, title: &str, detail: &str, hint: &str, action: Action) -> Item {
         let find = format!("{title} {detail}");
         let (picture, gauge) = (Picture::None, Gauge::None);
-        Item { glyph, picture, title: title.into(), detail: detail.into(), hint: hint.into(), find, action, project: None, gauge }
+        Item { glyph, picture, title: title.into(), detail: detail.into(), hint: hint.into(), find, action, project: None, gauge, letter: None }
     }
 }
 
@@ -495,10 +499,20 @@ impl Stock {
         clutch(glyph::PAUSE, "Pause clutch", Action::Clutch("pause"));
         clutch(glyph::PLAY, "Resume clutch", Action::Clutch("resume"));
         clutch(glyph::REFRESH, "Refresh project icons", Action::ForgetPictures);
-        // The drop-down terminal, to put in each of its shapes.
-        let visor = crate::visor::SHAPES.iter().map(|(name, title, _)| (format!("shape {name}"), *title));
+        // The drop-down terminal, to put in each of its shapes: each
+        // drawn, and with a letter that picks it with Alt.
+        for (name, title, _) in crate::visor::SHAPES {
+            let mut item = Item::new(glyph::RUN, &format!("Visor: {title}"), "", "visor", Action::Shell(format!("clutch visor shape {name}")));
+            item.find = format!("visor terminal drop-down {title} {name}");
+            item.picture = Picture::Shape(name);
+            item.letter = crate::visor::letter_of(name);
+            if let Some(letter) = item.letter {
+                item.hint = format!("Alt+{}", letter.to_ascii_uppercase());
+            }
+            stock.commands.push(item);
+        }
         let more = [("hide", "Hide"), ("grow", "Next size"), ("bigger", "Bigger"), ("smaller", "Smaller"), ("full", "Full screen and back"), ("reset", "As the settings say")];
-        for (words, title) in visor.chain(more.iter().map(|(words, title)| (words.to_string(), *title))) {
+        for (words, title) in more {
             let mut item = Item::new(glyph::RUN, &format!("Visor: {title}"), "", "visor", Action::Shell(format!("clutch visor {words}")));
             item.find = format!("visor terminal drop-down {title} {words}");
             stock.commands.push(item);
@@ -750,6 +764,7 @@ fn picture_key(picture: &Picture, look: &Look, size: usize) -> Option<String> {
         Picture::Named(name) => name.clone(),
         Picture::Project(name, folder) => format!("project {name} {folder:?} {}", look.said()),
         Picture::Emoji(text) => format!("emoji {text} {size}"),
+        Picture::Shape(name) => format!("shape {name} {size}"),
     })
 }
 
@@ -765,6 +780,7 @@ fn fetch_picture(item: &Item, look: &Look, size: usize, desk: Option<&Desk>, dra
         Picture::Project(name, folder) => projects::picture(name, folder.as_deref(), look),
         // A copied picture, made small enough to sit in a row.
         Picture::Emoji(text) => emoji::picture(text).map(|picture| projects::fitted_to(&picture, size.max(1))),
+        Picture::Shape(name) => crate::visor::named(name).map(|shape| crate::visor::picture(shape, size)),
         Picture::None | Picture::Color(..) => None,
     }
 }
@@ -878,7 +894,7 @@ fn login_shell() -> String {
 
 /// The environment your shell sets up, asked of it once: what it prints
 /// for `env`. Nothing, where it does not answer.
-fn login_env() -> &'static [(String, String)] {
+pub(crate) fn login_env() -> &'static [(String, String)] {
     static ENV: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
     ENV.get_or_init(|| {
         let output = Command::new(login_shell()).args(["-c", "env"]).stdin(Stdio::null()).stderr(Stdio::null()).output();
@@ -2736,6 +2752,10 @@ impl Palette {
                         perform(&action, self.desk.as_ref());
                         return event_loop.exit();
                     }
+                }
+                // A row listed with a letter of its own, as visor's shapes are.
+                if let Some(at) = self.found.iter().position(|item| item.letter.is_some() && item.letter == letter) {
+                    return self.go(at, event_loop);
                 }
                 let of_it = |item: &Item| item.project.as_ref().is_some_and(|project| Some(project.letter) == letter);
                 if let Some(at) = self.stock.projects().iter().position(of_it) {

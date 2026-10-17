@@ -13,6 +13,8 @@ pub struct Binding {
     /// The keys as they are written in the file.
     pub keys: String,
     pub command: String,
+    /// Only while visor is in: otherwise the keys are passed on.
+    pub while_visor: bool,
 }
 
 pub struct Config {
@@ -54,7 +56,7 @@ impl Config {
                 .to_string();
             let sequence = parse_sequence(&keys).map_err(|e| format!("\"{keys}\": {e}"))?;
             tree.add(&sequence, bindings.len()).map_err(|e| format!("\"{keys}\" {e}"))?;
-            bindings.push(Binding { keys, command });
+            bindings.push(Binding { keys, command, while_visor: false });
         }
         let timeout = Duration::from_millis(file.timeout.unwrap_or(2000));
         let mut links = Vec::new();
@@ -67,6 +69,15 @@ impl Config {
         }
         let widgets = crate::widgets::from_settings(&file.widgets)?;
         let visor = crate::visor::Settings::from_table(&file.visor)?;
+        // visor's keys are bindings too, that count only while it is in;
+        // where it is used at all.
+        let uses_visor = !file.visor.is_empty() || bindings.iter().any(|binding| binding.command.contains("clutch visor"));
+        for (keys, word) in visor.keys.iter().filter(|_| uses_visor) {
+            let sequence = parse_sequence(keys).map_err(|e| format!("visor.keys.\"{keys}\": {e}"))?;
+            tree.add_while_visor(&sequence, bindings.len())
+                .map_err(|_| format!("visor.keys.\"{keys}\": the same keys are in [bind]; take them from one or the other"))?;
+            bindings.push(Binding { keys: keys.clone(), command: format!("clutch visor {word}"), while_visor: true });
+        }
         Ok((Config { bindings, timeout, links, widgets, visor }, tree))
     }
 }
@@ -140,14 +151,34 @@ mod tests {
     #[test]
     fn the_example_visor_lines_read() {
         // The bindings for it, and its settings, with the # taken off.
-        let uncommented = |line: &str| line.strip_prefix("# ").unwrap_or(line).to_string() + "\n";
+        let uncommented = |line: &str| {
+            let line = line.strip_prefix("# ").unwrap_or(line);
+            // Settings and tables, and not the words about them.
+            let setting = line.starts_with('[') || line.contains(" = ");
+            if setting { format!("{line}\n") } else { String::new() }
+        };
         let keys: String = EXAMPLE.lines().filter(|line| line.starts_with("# \"ctrl+") && line.contains("clutch ")).map(uncommented).collect();
         let settings: String = EXAMPLE.lines().skip_while(|line| *line != "# [visor]").map(uncommented).collect();
         let (config, _) = Config::parse(&format!("[bind]\n{keys}\n{settings}")).unwrap();
-        assert_eq!(config.bindings.len(), 10);
-        assert_eq!(config.bindings[1].command, "clutch palette '>visor'");
+        // Its two, and its ten while it is in, as they are when left out.
+        assert_eq!(config.bindings.len(), 12);
+        assert_eq!(config.bindings[1].command, "clutch palette visor");
+        assert!(config.bindings[2..].iter().all(|binding| binding.while_visor));
         let plain = crate::visor::Settings::default();
-        assert_eq!((config.visor.shape, &config.visor.run), (plain.shape, &plain.run));
+        assert_eq!((config.visor.shape, &config.visor.run, &config.visor.keys), (plain.shape, &plain.run, &plain.keys));
+    }
+
+    #[test]
+    fn visors_keys_only_where_it_is_used() {
+        let (config, _) = Config::parse("[bind]\n\"alt+k\" = \"clutch palette\"\n").unwrap();
+        assert_eq!(config.bindings.len(), 1);
+        let (config, _) = Config::parse("[bind]\n\"ctrl+space\" = \"clutch visor\"\n").unwrap();
+        assert_eq!(config.bindings.len(), 11);
+        assert_eq!((config.bindings[1].keys.as_str(), config.bindings[1].command.as_str()), ("super+left", "clutch visor left"));
+        let clash = Config::parse("[bind]\n\"ctrl+space\" = \"clutch visor\"\n\"super+left\" = \"x\"\n").err().unwrap();
+        assert!(clash.contains("super+left") && clash.contains("[bind]"));
+        let (config, _) = Config::parse("[bind]\n\"ctrl+space\" = \"clutch visor\"\n[visor.keys]\n\"super+h\" = \"left\"\n").unwrap();
+        assert_eq!(config.bindings.len(), 2);
     }
 
     #[test]

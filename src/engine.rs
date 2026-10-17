@@ -23,9 +23,19 @@ struct Node {
 #[derive(Default)]
 pub struct Bindings {
     root: Node,
+    /// The bindings that count only while visor is in.
+    while_visor: Vec<usize>,
 }
 
 impl Bindings {
+    /// A binding that counts only while visor is in, and is a key like
+    /// any other while it is not.
+    pub fn add_while_visor(&mut self, sequence: &[Chord], binding: usize) -> Result<(), &'static str> {
+        self.add(sequence, binding)?;
+        self.while_visor.push(binding);
+        Ok(())
+    }
+
     pub fn add(&mut self, sequence: &[Chord], binding: usize) -> Result<(), &'static str> {
         let mut node = &mut self.root;
         for chord in sequence {
@@ -62,11 +72,18 @@ pub struct Engine {
     kept: Vec<u16>,
     /// The chords of a sequence so far, and when waiting for the next ends.
     pending: Option<(Vec<Chord>, Instant)>,
+    /// Whether visor is in, asked as one of its keys is pressed.
+    visor_in: Box<dyn FnMut() -> bool + Send>,
 }
 
 impl Engine {
     pub fn new(bindings: Bindings, timeout: Duration) -> Engine {
-        Engine { bindings, timeout, held: Vec::new(), kept: Vec::new(), pending: None }
+        Engine { bindings, timeout, held: Vec::new(), kept: Vec::new(), pending: None, visor_in: Box::new(|| false) }
+    }
+
+    /// How to tell whether visor is in.
+    pub fn ask_visor(&mut self, visor_in: Box<dyn FnMut() -> bool + Send>) {
+        self.visor_in = visor_in;
     }
 
     /// New bindings, with the keys that are down left as they are.
@@ -134,7 +151,14 @@ impl Engine {
         let in_sequence = !path.is_empty();
         path.push(chord);
 
-        let Some(node) = self.bindings.at(&path) else {
+        let node = self.bindings.at(&path);
+        // One of visor's keys, while it is not in, is any other key.
+        let for_visor = node.and_then(|node| node.binding).is_some_and(|binding| self.bindings.while_visor.contains(&binding));
+        if for_visor && !in_sequence && !(self.visor_in)() {
+            out.push(Out::Key(code, 1));
+            return;
+        }
+        let Some(node) = node else {
             if in_sequence {
                 // A key that does not continue the sequence ends it, and
                 // is not typed into whatever is in front.
@@ -301,6 +325,28 @@ mod tests {
         feed(&mut e, now, &[(CTRL_L, 1), (SPACE, 1)]);
         e.rebind(Bindings::default(), Duration::from_secs(2));
         assert_eq!(feed(&mut e, now, &[(SPACE, 0), (CTRL_L, 0)]), [Key(CTRL_L, 0)]);
+    }
+
+    #[test]
+    fn visors_keys_only_while_it_is_in() {
+        const SUPER_L: u16 = 125;
+        const LEFT: u16 = 105;
+        let mut bindings = Bindings::default();
+        bindings.add(&parse_sequence("ctrl+space").unwrap(), 0).unwrap();
+        bindings.add_while_visor(&parse_sequence("super+left").unwrap(), 1).unwrap();
+        let mut e = Engine::new(bindings, Duration::from_secs(2));
+        let shown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let asked = shown.clone();
+        e.ask_visor(Box::new(move || asked.load(std::sync::atomic::Ordering::SeqCst)));
+        let now = Instant::now();
+        let press = [(SUPER_L, 1), (LEFT, 1), (LEFT, 0), (SUPER_L, 0)];
+        // Away, the window manager has the key.
+        assert_eq!(feed(&mut e, now, &press), [Key(SUPER_L, 1), Key(LEFT, 1), Key(LEFT, 0), Key(SUPER_L, 0)]);
+        shown.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(feed(&mut e, now, &press), [Key(SUPER_L, 1), Key(KEY_LEFTCTRL, 1), Key(KEY_LEFTCTRL, 0), Run(1), Key(SUPER_L, 0)]);
+        // The rest are as ever, in or not.
+        shown.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(feed(&mut e, now, &[(CTRL_L, 1), (SPACE, 1), (SPACE, 0), (CTRL_L, 0)]).contains(&Run(0)));
     }
 
     #[test]

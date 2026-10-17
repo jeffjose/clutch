@@ -11,11 +11,17 @@
             this._visorMapped(actor.meta_window);
         });
         this._focused = global.display.connect('notify::focus-window', () => this._visorFocused());
+        this._pressed = global.display.connect('accelerator-activated', (_display, action) => this._visorPressed(action));
+        // Keys set aside for visor when the shell last stopped, put back.
+        this._visorGiveBack();
     }
 
     disable() {
         global.window_manager.disconnect(this._mapped);
         global.display.disconnect(this._focused);
+        global.display.disconnect(this._pressed);
+        this._visorKeys(false);
+        this._visorTrack(null);
         this._visor = null;
         this._dbus.unexport();
         this._dbus = null;
@@ -146,9 +152,12 @@
         this._visor = want;
         const window = this._visorWindow();
         if (!window) {
+            if (want.do === 'start')
+                return this._visorStart(want) ? 'starting' : 'absent';
             this._visorPending = want.do === 'toggle' || want.do === 'show';
             return 'absent';
         }
+        this._visorTrack(window);
         const shown = !window.minimized;
         if (want.do === 'state')
             return shown ? 'shown' : 'hidden';
@@ -172,10 +181,209 @@
     }
 
     _visorMapped(window) {
-        if (!window || !this._visorPending || !this._isVisor(window))
+        if (!window || !this._isVisor(window))
+            return;
+        // Started by the shell, it can be left out of Alt+Tab, the
+        // overview and the dash, as a panel is.
+        try {
+            if (this._visorClient?.owns_window(window))
+                this._visorClient.hide_from_window_list(window);
+        } catch (e) {
+            log(`clutch: visor stays in the window list: ${e.message}`);
+        }
+        this._visorTrack(window);
+        if (!this._visorPending)
             return;
         this._visorPending = false;
         this._visorShow(window, false);
+    }
+
+    // Start the terminal as a client of the shell's own, which is what
+    // lets the shell keep it out of the window list. How that is asked
+    // has changed with the versions of the shell; where none of them
+    // works, clutch starts it the plain way.
+    _visorStart(want) {
+        if (!Meta.is_wayland_compositor() || !want.run)
+            return false;
+        try {
+            const launcher = new Gio.SubprocessLauncher({flags: Gio.SubprocessFlags.NONE});
+            if (want.path)
+                launcher.setenv('PATH', want.path, true);
+            launcher.set_cwd(GLib.get_home_dir());
+            let client;
+            if (Meta.WaylandClient.new_subprocess) {
+                client = Meta.WaylandClient.new_subprocess(global.context, launcher, want.run);
+            } else {
+                try {
+                    client = Meta.WaylandClient.new(global.context, launcher);
+                } catch (_) {
+                    client = Meta.WaylandClient.new(launcher);
+                }
+                client.spawnv(global.display, want.run);
+            }
+            this._visorClient = client;
+            this._visorPending = true;
+            return true;
+        } catch (e) {
+            log(`clutch: the shell cannot start visor itself: ${e.message}`);
+            return false;
+        }
+    }
+
+    // Follow the terminal: its keys are taken while it is in, and given
+    // back as it goes away or is closed, however that comes about.
+    _visorTrack(window) {
+        if (this._tracked === window)
+            return;
+        if (this._tracked) {
+            for (const id of this._trackedIds)
+                this._tracked.disconnect(id);
+        }
+        this._tracked = window;
+        this._trackedIds = [];
+        if (!window)
+            return;
+        this._trackedIds.push(window.connect('notify::minimized', () => this._visorKeys(!window.minimized)));
+        this._trackedIds.push(window.connect('unmanaged', () => {
+            this._visorKeys(false);
+            this._tracked = null;
+        }));
+        this._visorKeys(!window.minimized);
+    }
+
+    // Take visor's keys, or give them back. GNOME's own keys on the same
+    // keys (Super and an arrow tiles a window) are set aside first, and
+    // written down, so that they are put back even if the shell stops
+    // while visor is in.
+    _visorKeys(on) {
+        const keys = this._visor?.keys ?? [];
+        if (on && keys.length > 0 && !this._grabbed) {
+            this._grabbed = new Map();
+            this._visorSetAside(keys.map(([accelerator]) => accelerator));
+            this._visorGrab(0);
+        } else if (!on && this._grabbed) {
+            if (this._grabTimer)
+                GLib.source_remove(this._grabTimer);
+            this._grabTimer = 0;
+            for (const action of this._grabbed.keys()) {
+                global.display.ungrab_accelerator(action);
+                Main.wm.allowKeybinding(Meta.external_binding_name_for_action(action), Shell.ActionMode.NONE);
+            }
+            this._grabbed = null;
+            this._visorGiveBack();
+        }
+    }
+
+    // The shell lets go of its own keys a moment after they are set
+    // aside, so what cannot be taken at once is tried again.
+    _visorGrab(tries) {
+        if (!this._grabbed)
+            return;
+        const keys = this._visor?.keys ?? [];
+        const held = new Set([...this._grabbed.values()].map(([accelerator]) => accelerator));
+        for (const [accelerator, word] of keys) {
+            if (held.has(accelerator))
+                continue;
+            const action = global.display.grab_accelerator(accelerator, Meta.KeyBindingFlags.NONE);
+            if (action === Meta.KeyBindingAction.NONE)
+                continue;
+            Main.wm.allowKeybinding(Meta.external_binding_name_for_action(action), Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW);
+            this._grabbed.set(action, [accelerator, word]);
+        }
+        if (this._grabbed.size < keys.length && tries < 20) {
+            this._grabTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
+                this._grabTimer = 0;
+                this._visorGrab(tries + 1);
+                return GLib.SOURCE_REMOVE;
+            });
+        }
+    }
+
+    _visorPressed(action) {
+        const taken = this._grabbed?.get(action);
+        if (!taken || !this._visor?.clutch)
+            return;
+        try {
+            Gio.Subprocess.new([this._visor.clutch, 'visor', taken[1]], Gio.SubprocessFlags.NONE);
+        } catch (e) {
+            log(`clutch: visor ${taken[1]}: ${e.message}`);
+        }
+    }
+
+    // An accelerator as its modifiers and key, however it was written.
+    _normal(accelerator) {
+        const names = {primary: 'control', ctrl: 'control', control: 'control', shift: 'shift', alt: 'alt', mod1: 'alt', super: 'super', mod4: 'super', meta: 'super'};
+        const mods = new Set();
+        let rest = accelerator;
+        let match;
+        while ((match = /^<([^>]+)>/.exec(rest))) {
+            mods.add(names[match[1].toLowerCase()] ?? match[1].toLowerCase());
+            rest = rest.slice(match[0].length);
+        }
+        return [...mods].sort().join('+') + '+' + rest.toLowerCase();
+    }
+
+    _visorLentFile() {
+        const state = GLib.getenv('XDG_STATE_HOME') || GLib.build_filenamev([GLib.get_home_dir(), '.local', 'state']);
+        return GLib.build_filenamev([state, 'clutch', 'visor-lent.json']);
+    }
+
+    _visorSetAside(accelerators) {
+        const ours = new Set(accelerators.map(accelerator => this._normal(accelerator)));
+        const lent = [];
+        const source = Gio.SettingsSchemaSource.get_default();
+        const schemas = ['org.gnome.desktop.wm.keybindings', 'org.gnome.shell.keybindings', 'org.gnome.mutter.keybindings', 'org.gnome.mutter.wayland.keybindings'];
+        for (const id of schemas) {
+            const schema = source.lookup(id, true);
+            if (!schema)
+                continue;
+            const settings = new Gio.Settings({settings_schema: schema});
+            for (const key of schema.list_keys()) {
+                if (schema.get_key(key).get_value_type().dup_string() !== 'as')
+                    continue;
+                const value = settings.get_strv(key);
+                const kept = value.filter(accelerator => !ours.has(this._normal(accelerator)));
+                if (kept.length === value.length)
+                    continue;
+                lent.push([id, key, value]);
+                settings.set_strv(key, kept);
+            }
+        }
+        if (lent.length === 0)
+            return;
+        // Added to what is already written down, never in its place.
+        const file = this._visorLentFile();
+        const before = this._visorReadLent();
+        GLib.mkdir_with_parents(GLib.path_get_dirname(file), 0o700);
+        GLib.file_set_contents(file, JSON.stringify(before.concat(lent)));
+    }
+
+    _visorReadLent() {
+        try {
+            const [ok, bytes] = GLib.file_get_contents(this._visorLentFile());
+            return ok ? JSON.parse(new TextDecoder().decode(bytes)) : [];
+        } catch (_) {
+            return [];
+        }
+    }
+
+    _visorGiveBack() {
+        const lent = this._visorReadLent();
+        if (lent.length === 0)
+            return;
+        // The first written is how it was before visor took any.
+        const done = new Set();
+        for (const [id, key, value] of lent) {
+            if (done.has(`${id} ${key}`))
+                continue;
+            done.add(`${id} ${key}`);
+            try {
+                new Gio.Settings({schema_id: id}).set_strv(key, value);
+            } catch (e) {
+                log(`clutch: putting back ${id} ${key}: ${e.message}`);
+            }
+        }
+        GLib.unlink(this._visorLentFile());
     }
 
     // Away, when another window takes the keyboard, if clutch says so.

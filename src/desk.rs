@@ -12,7 +12,9 @@ use std::env;
 use x11rb::connection::Connection;
 use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::shape::{ConnectionExt as _, SK, SO};
-use x11rb::protocol::xproto::{AtomEnum, ClientMessageEvent, ClipOrdering, ConnectionExt, EventMask, Rectangle};
+use x11rb::protocol::xproto::{AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ClipOrdering, ConnectionExt, EventMask, PropMode, Rectangle};
+use x11rb::protocol::Event;
+use x11rb::wrapper::ConnectionExt as _;
 use x11rb::rust_connection::RustConnection;
 use x11rb::CURRENT_TIME;
 
@@ -301,10 +303,7 @@ impl X11 {
             if title.is_empty() {
                 title = String::from_utf8_lossy(&self.bytes(id, "WM_NAME")).into_owned();
             }
-            // Two names, each ended by a zero: the second is the program's.
-            let class = self.bytes(id, "WM_CLASS");
-            let class = class.split(|byte| *byte == 0).filter(|part| !part.is_empty()).next_back();
-            let class = class.map_or(String::new(), |class| String::from_utf8_lossy(class).into_owned());
+            let class = self.class_of(id);
             let workspace = self.numbers(id, "_NET_WM_DESKTOP", 1).first().copied().filter(|at| *at != u32::MAX);
             windows.push(Window { id, title, class, workspace, icon: String::new() });
         }
@@ -464,6 +463,51 @@ impl X11 {
         all.into_iter().find(|id| self.bytes(*id, "WM_CLASS").split(|byte| *byte == 0).any(|name| name == class.as_bytes()))
     }
 
+    /// Where a window is, frame and all.
+    pub fn frame_area(&self, window: u32) -> Option<Area> {
+        self.frame(window).map(|(area, _)| area)
+    }
+
+    /// Wait for what was asked to have been taken in.
+    pub fn sync(&self) {
+        let _ = self.conn.get_input_focus().ok().and_then(|cookie| cookie.reply().ok());
+    }
+
+    /// Move a window's frame so its corner is here, leaving its size.
+    pub fn move_to(&self, window: u32, left: i32, top: i32) {
+        const X_Y: u32 = 0x3 << 8;
+        const NORTH_WEST: u32 = 1;
+        self.ask(window, "_NET_MOVERESIZE_WINDOW", [NORTH_WEST | X_Y | FROM_PAGER << 12, left as u32, top as u32, 0, 0]);
+    }
+
+    /// The program a window is of, as WM_CLASS has it: "firefox".
+    pub fn class_of(&self, window: u32) -> String {
+        // Two names, each ended by a zero: the second is the program's.
+        let class = self.bytes(window, "WM_CLASS");
+        let class = class.split(|byte| *byte == 0).filter(|part| !part.is_empty()).next_back();
+        class.map_or(String::new(), |class| String::from_utf8_lossy(class).into_owned())
+    }
+
+    /// Call `changed` each time another window takes the keyboard, with
+    /// that window, for as long as the display is there.
+    pub fn each_active(&self, mut changed: impl FnMut(&X11, Option<u32>)) {
+        let listen = ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE);
+        if self.conn.change_window_attributes(self.root, &listen).is_err() || self.conn.flush().is_err() {
+            return;
+        }
+        let active = self.atom("_NET_ACTIVE_WINDOW");
+        let mut was = self.active();
+        while let Ok(event) = self.conn.wait_for_event() {
+            if let Event::PropertyNotify(event) = event {
+                let now = self.active();
+                if event.atom == active && now != was {
+                    was = now;
+                    changed(self, now);
+                }
+            }
+        }
+    }
+
     /// Whether a window is minimized.
     pub fn hidden(&self, window: u32) -> bool {
         self.numbers(window, "_NET_WM_STATE", 16).contains(&self.atom("_NET_WM_STATE_HIDDEN"))
@@ -482,6 +526,13 @@ impl X11 {
             self.ask(window, "_NET_WM_STATE", [ADD, self.atom(one), self.atom(two), FROM_PAGER, 0]);
         }
         self.ask(window, "_NET_WM_DESKTOP", [u32::MAX, FROM_PAGER, 0, 0, 0]);
+        // And no title bar or border from the window manager, which
+        // reads this as Motif's window manager did: its decorations, none.
+        const DECORATIONS: u32 = 2;
+        let hints = [DECORATIONS, 0, 0, 0, 0];
+        let atom = self.atom("_MOTIF_WM_HINTS");
+        let _ = self.conn.change_property32(PropMode::REPLACE, window, atom, atom, &hints);
+        let _ = self.conn.flush();
     }
 
     /// The main monitor, or the first where none is.

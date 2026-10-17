@@ -23,6 +23,7 @@ const HELP: &str = "\
 clutch: keys that are yours before any program's.
 
   clutch palette [TEXT]         the box: type to find a window or an application
+                                  (`clutch palette visor`: the shapes of visor)
                                   > things to do   @ windows   # workspaces   ! shell
                                   \" clipboard   : emoji   12*7   timer 25m   g/search
   clutch raise NAME [COMMAND]   go to a program's window, or start it
@@ -83,7 +84,9 @@ fn open_palette(mut rest: Vec<String>) -> Result<(), String> {
         return Ok(palette::list(&rest.pop().unwrap_or_default()));
     }
     if !picture {
-        return palette::run(&rest.join(" "));
+        // `clutch palette visor` opens on visor's shapes.
+        let typed = rest.join(" ");
+        return palette::run(if typed == "visor" { ">visor " } else { &typed });
     }
     let (Some(typed), false) = (rest.pop(), rest.is_empty()) else {
         return Err("palette --picture FILE [ROW] TEXT".into());
@@ -141,7 +144,8 @@ fn check(path: PathBuf) -> Result<(), String> {
     let (settings, _) = config::Config::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     let width = settings.bindings.iter().map(|b| b.keys.len()).max().unwrap_or(0);
     for binding in &settings.bindings {
-        println!("{:width$}  {}", binding.keys, binding.command);
+        let only = if binding.while_visor { "  (while visor is in)" } else { "" };
+        println!("{:width$}  {}{only}", binding.keys, binding.command);
     }
     if settings.bindings.is_empty() {
         println!("nothing bound");

@@ -13,10 +13,10 @@ const NAME: &str = "io.github.jeffjose.Clutch";
 
 /// Which writing of the extension this is. The shell keeps running the
 /// one it started with, and says which that was.
-const VERSION: u32 = 4;
+const VERSION: u32 = 5;
 
 /// What it answers to.
-const INTERFACE: &str = r#"const VERSION = 4;
+const INTERFACE: &str = r#"const VERSION = 5;
 const INTERFACE = `<node><interface name="io.github.jeffjose.Clutch">
   <method name="State"><arg type="s" direction="out"/></method>
   <method name="Activate"><arg type="u" direction="in"/></method>
@@ -34,12 +34,13 @@ const INTERFACE = `<node><interface name="io.github.jeffjose.Clutch">
 /// with version 45, and reads nothing else since.
 const MODULES: &str = "import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 ";
-const BEFORE_MODULES: &str = "const {Clutter, Gio, Meta, Shell} = imports.gi;
+const BEFORE_MODULES: &str = "const {Clutter, Gio, GLib, Meta, Shell} = imports.gi;
 const Main = imports.ui.main;
 ";
 const BODY: &str = include_str!("../assets/extension.js");
@@ -191,7 +192,7 @@ mod tests {
         assert!(new.contains("export default class Clutch extends Extension {"));
         assert!(!new.contains("function init()"));
         let old = source(42);
-        assert!(old.starts_with("const {Clutter, Gio, Meta, Shell} = imports.gi;"));
+        assert!(old.starts_with("const {Clutter, Gio, GLib, Meta, Shell} = imports.gi;"));
         assert!(old.contains("function init()") && !old.contains("import "));
         for source in [&new, &old] {
             assert!(source.contains("<method name=\"State\">") && source.contains("    State() {"));
@@ -203,6 +204,23 @@ mod tests {
             fs::write(dir.join("new.mjs"), new).unwrap();
             fs::write(dir.join("old.js"), old).unwrap();
         }
+    }
+
+    /// visor's part of the extension, run in a made-up shell
+    /// (tests/extension_shell.js), where there is node to run it.
+    #[test]
+    fn visor_in_a_made_up_shell() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return eprintln!("no node: the extension is not run");
+        }
+        let dir = env::temp_dir().join(format!("clutch-extension-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("old.js"), source(42)).unwrap();
+        let shell = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/extension_shell.js");
+        let run = Command::new("node").arg(shell).arg(dir.join("old.js")).output().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        let said = String::from_utf8_lossy(&run.stdout).into_owned() + &String::from_utf8_lossy(&run.stderr);
+        assert!(run.status.success(), "{said}");
     }
 
     #[test]

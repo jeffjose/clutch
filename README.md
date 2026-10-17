@@ -211,30 +211,56 @@ key.
 ```toml
 [bind]
 "ctrl+space" = "clutch visor"
-"ctrl+shift+space" = "clutch palette '>visor'"
-"ctrl+super+left" = "clutch visor left"
-"ctrl+super+g" = "clutch visor grow"
+"ctrl+shift+space" = "clutch palette visor"
 ```
 
 `clutch visor` starts the terminal if there is none, brings it in if it
 is away, gives it the keyboard if it is in but behind, and sends it away
-if it is in and has the keyboard. The rest move it, and bring it in if
-it is away:
+if it is in and has the keyboard. It slides in from its edge and out to
+it again.
+
+While it is in, these keys are its own; away, they are the desktop's as
+they always were:
+
+| | |
+|---|---|
+| Super+← → ↑ ↓ | to that edge of the screen |
+| Super+C | to the middle |
+| Super+= and Super+- | bigger and smaller, by a tenth of the screen |
+| Super+G | its next size: 40%, 70%, 100%, and round again |
+| Super+F | full screen, and back |
+| Super+Esc | away |
+
+Where clutch holds the keyboard, it takes these keys only while the
+terminal is in. On GNOME without that, the shell takes them as the
+terminal comes in, setting aside its own keys on them (Super and an arrow
+tiles a window) and putting them back as it goes; written down first, so
+they are put back even if the shell stops in between. `[visor.keys]`
+gives it other keys.
+
+`clutch palette visor` opens the box on its shapes, each drawn, and Alt
+and a letter puts it in one: Alt+T the top, Alt+C the top in the middle,
+Alt+B the bottom, Alt+L and Alt+R the halves, Alt+I a third at the right,
+Alt+K a corner, Alt+F floating in the middle, Alt+U full screen and Alt+P
+a strip along the top.
+
+![The box, on visor's shapes](docs/visor-box.png)
+
+Each of these is a command too, for a key of your own:
 
 ```sh
 clutch visor left              # to an edge: top, bottom, left, right, center
 clutch visor right-third       # a shape: top-centered, left-half, right-half,
                                # right-third, corner, floating, peek
-clutch visor bigger            # or smaller, by a tenth of the screen
-clutch visor grow              # its next size: 40%, 70%, 100%, and round again
-clutch visor full              # full screen, and back
+clutch visor bigger            # or smaller
+clutch visor grow
+clutch visor full
 clutch visor reset             # as the settings say
 clutch visor status            # where it is, in a line
 ```
 
-Where it was moved to is kept until the settings are saved again. In the
-box, `>visor` lists its shapes, so Ctrl+Shift+Space, a word of the shape
-and Enter puts it there. The settings say where it starts:
+Where it was moved to is kept until the settings are saved again. The
+settings say where it starts:
 
 ```toml
 [visor]
@@ -243,19 +269,24 @@ height = "40%"
 gap = 0                  # pixels between it and the edges of the screen
 grow = ["40%", "70%", "100%"]
 monitor = "in use"       # where the pointer is, or "main"
-slide = true             # on GNOME
+slide = true
 hide_on_click_away = false
 ```
+
+![visor in eight of its shapes](docs/visor-shapes.jpg)
 
 The example settings have them all. The terminal is known by its class,
 `io.github.jeffjose.visor`, so it is a Ghostty of its own and your other
 Ghostty windows are left alone; `run` says what starts it, for a
 different terminal or a command other than screen. It stays above the
-other windows and on every workspace, and is left out of the box's
-windows. On X11 it is off the taskbar too, and comes in at once. On GNOME
-the shell's extension moves it, which needs the extension as this clutch
-writes it: run `clutch setup` once more and log out and in. It slides in
-there, but it is still in the shell's Alt+Tab.
+other windows and on every workspace, has no title bar, and is left out
+of the taskbar, Alt+Tab and the box's windows. `clutch status` says where
+it is.
+
+On GNOME the shell's extension moves it, which needs the extension as
+this clutch writes it: run `clutch setup` once more and log out and in.
+The shell starts the terminal itself, which is what lets it leave it out
+of Alt+Tab, the overview and the dash.
 
 ## Without sudo
 
@@ -292,9 +323,12 @@ thing it logs is which bindings ran.
 ## Tests
 
 ```sh
-cargo test                # the logic
+cargo test                # the logic, and the GNOME extension in a
+                          # made-up shell where there is node
 cargo test -- --ignored   # clutch itself, between a virtual keyboard and
-                          # a reader; needs `clutch setup` first
+                          # a reader; needs `clutch setup` first. visor's
+                          # test also needs X11 and Ghostty, and puts a
+                          # terminal on the screen
 ```
 
 ## License

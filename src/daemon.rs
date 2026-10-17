@@ -66,6 +66,8 @@ struct Daemon {
     given: Arc<Mutex<gnome::Given>>,
     under_systemd: bool,
     started: Instant,
+    /// visor's settings, for what watches the windows for it.
+    visor: Arc<Mutex<crate::visor::Settings>>,
 }
 
 fn log(message: impl AsRef<str>) {
@@ -119,8 +121,11 @@ pub fn run(options: Options) -> ! {
         given: Arc::default(),
         under_systemd: env::var_os("NOTIFY_SOCKET").is_some(),
         started: Instant::now(),
+        visor: Arc::default(),
     };
     daemon.reload();
+    // On X11, visor goes when another window is clicked, if it is to.
+    crate::visor::watch(daemon.visor.clone());
     notify("READY=1");
 
     // The program this is, and when it was written: installing a newer
@@ -227,6 +232,8 @@ impl Daemon {
         match parsed {
             Ok((settings, tree)) => {
                 self.engine.rebind(tree, settings.timeout);
+                self.engine.ask_visor(crate::visor::asker(settings.visor.clone()));
+                *self.visor.lock().unwrap() = settings.visor;
                 self.runs = vec![0; settings.bindings.len()];
                 self.bindings = settings.bindings;
                 self.problem = None;
@@ -475,6 +482,10 @@ impl Daemon {
                 Err(why) => text += &style.warning(&format!("GNOME extension {why}; until then the box cannot see windows")),
             }
         }
+        if self.bindings.iter().any(|binding| !binding.while_visor && binding.command.starts_with("clutch visor")) {
+            let visor = self.visor.lock().unwrap().clone();
+            text += &style.line(CYAN, "Visor", &crate::visor::status_line(&visor));
+        }
         if let Some(problem) = &self.problem {
             text += &style.error(&format!("{problem}; the bindings are as they were"));
         }
@@ -497,6 +508,8 @@ impl Daemon {
             let note = given.notes.iter().find(|note| self.gnome && note.keys == binding.keys);
             let (color, word) = match note {
                 _ if !working => (YELLOW, "Idle"),
+                // On GNOME the shell takes these, while visor is in.
+                _ if binding.while_visor => (CYAN, "In visor"),
                 Some(note) if note.fix.is_some() => (RED, "Blocked"),
                 Some(note) if note.what.starts_with("skipped") => (YELLOW, "Skipped"),
                 Some(_) => (RED, "Failed"),
