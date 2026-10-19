@@ -22,9 +22,11 @@ x11rb = { version = "0.14", features = ["randr", "shape", "xfixes"] }
 [patch.crates-io]
 softbuffer = { path = "vendor/softbuffer" }
 
+# No cross-crate LTO and 16 codegen units, Cargo's own default, as in jog:
+# a clean build takes 21 s rather than 52 s (fat LTO with one unit, a
+# single core for all of it), and the binary is 0.8 MB larger. Measured
+# 2026-10-19 without kache.
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
 panic = "abort"
 strip = true
