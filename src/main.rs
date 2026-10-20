@@ -51,6 +51,17 @@ Held together, Backspace, Escape and Enter stop clutch, whatever else is
 going on.
 ";
 
+/// The version and the commit it was built from: `0.1.0-abc1234`, with
+/// `-dirty` if the tree had changes not committed.
+fn version() -> String {
+    // Unset where git could not be asked, or vergen's stand-in.
+    let Some(sha) = option_env!("VERGEN_GIT_SHA").filter(|sha| !sha.is_empty() && !sha.contains("VERGEN")) else {
+        return env!("CARGO_PKG_VERSION").to_string();
+    };
+    let dirty = if option_env!("VERGEN_GIT_DIRTY") == Some("true") { "-dirty" } else { "" };
+    format!("{}-{sha}{dirty}", env!("CARGO_PKG_VERSION"))
+}
+
 /// Say something to the running clutch and return what it says back.
 fn ask(what: &str) -> Result<String, String> {
     let not_running = |_| "clutch is not running (clutch setup, or systemctl --user start clutch)";
@@ -186,7 +197,7 @@ fn main() {
             Ok(())
         }
         "-V" | "--version" => {
-            println!("clutch {}", env!("CARGO_PKG_VERSION"));
+            println!("clutch {}", version());
             Ok(())
         }
         other => Err(format!("no command {other} (clutch --help)")),
