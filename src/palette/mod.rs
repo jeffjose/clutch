@@ -517,6 +517,23 @@ impl Stock {
             item.find = format!("visor terminal drop-down {title} {words}");
             stock.commands.push(item);
         }
+        // Screenshots by hotshot, and pictures and videos looked at in
+        // jog, where they are installed. hotshot waits for the box to go,
+        // so as not to freeze it into the picture.
+        let tools = [
+            ("hotshot", "Screenshot", "sleep 0.25; hotshot", "screenshot screen capture grab snip print picture", "applets-screenshooter"),
+            ("hotshot", "Screenshot again", "sleep 0.25; hotshot -a -c", "screenshot again repeat last same area capture", "applets-screenshooter"),
+            ("hotshot", "Record screen", "sleep 0.25; hotshot -R", "record screen video recording capture screencast", "media-record"),
+            ("jog", "Image viewer", "jog --newest --filter '#image' ~/Pictures", "image viewer pictures photos jog", "image-x-generic"),
+            ("jog", "Video player", "jog --newest --filter '#video' ~/Videos", "video player movies videos jog", "video-x-generic"),
+        ];
+        for (program, title, line, find, icon) in tools {
+            if on_path(program) {
+                let mut item = Item::new(glyph::APP, title, "", program, Action::Shell(line.to_string()));
+                (item.find, item.picture) = (format!("{title} {find} {program}"), Picture::Named(icon.to_string()));
+                stock.commands.push(item);
+            }
+        }
         // Other words each control is known by.
         let also = ["wifi network internet", "volume audio speakers output", "microphone mute", "", "do not disturb notifications", "redshift warm", "pause music media", "skip track media", "back track media"];
         for (at, name) in controls::NAMES.iter().enumerate() {
@@ -868,6 +885,15 @@ pub(crate) fn spawn(line: &str) {
     let mut command = Command::new("/bin/sh");
     command.arg("-c").arg(config::with_clutch(line));
     start(command);
+}
+
+/// Whether a program is installed: on clutch's own PATH, or where the
+/// shell you log in with finds ones installed for you alone. Asking that
+/// shell itself is too slow for the box to wait on.
+fn on_path(program: &str) -> bool {
+    let home = env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    let own = [".local/bin", ".cargo/bin", ".local/share/mise/shims", "bin"].map(|dir| home.join(dir));
+    env::var_os("PATH").map(|path| env::split_paths(&path).collect::<Vec<_>>()).unwrap_or_default().iter().chain(&own).any(|dir| dir.join(program).is_file())
 }
 
 /// A line you typed, run by your own shell, so that its aliases are there.
