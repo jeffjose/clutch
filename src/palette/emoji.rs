@@ -2,15 +2,22 @@
 //! the picture of each, as the color emoji font has it. A color font's
 //! letters are pictures, which the font renderer cannot draw: Noto Color
 //! Emoji keeps each as a PNG, which is read out of the font here.
+//!
+//! The list, and the font for a system that has none of its own, come
+//! with clutch: both are of Emoji 16.0.
 
 use super::apps;
 use super::canvas::Icon;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::sync::OnceLock;
 
-const LIST: &str = "/usr/share/unicode/emoji/emoji-test.txt";
+/// Unicode's list of them, emoji-test.txt.
+const LIST: &str = include_str!("../../assets/emoji-test.txt");
+/// The system's own font, which may be newer than the one clutch has.
 const FONTS: &[&str] = &["/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf", "/usr/share/fonts/noto/NotoColorEmoji.ttf", "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf"];
+const BUNDLED: &[u8] = include_bytes!("../../assets/NotoColorEmoji.ttf");
 
 pub struct Emoji {
     pub text: String,
@@ -40,7 +47,7 @@ pub fn name_of(text: &str) -> Option<&'static str> {
 fn listed() -> &'static [Emoji] {
     static LISTED: OnceLock<Vec<Emoji>> = OnceLock::new();
     LISTED.get_or_init(|| {
-        let text = fs::read_to_string(LIST).unwrap_or_default();
+        let text = LIST;
         let mut group = String::new();
         let mut all = Vec::new();
         for line in text.lines() {
@@ -73,16 +80,17 @@ pub fn picture(text: &str) -> Option<Icon> {
 
 /// The font, read once: where in it each emoji's PNG is.
 struct Font {
-    bytes: Vec<u8>,
+    bytes: Cow<'static, [u8]>,
     glyphs: HashMap<u32, (usize, usize)>,
 }
 
+/// The system's font, or failing that clutch's own.
 fn font() -> Option<&'static Font> {
     static FONT: OnceLock<Option<Font>> = OnceLock::new();
-    FONT.get_or_init(|| FONTS.iter().find_map(|path| read(fs::read(path).ok()?))).as_ref()
+    FONT.get_or_init(|| FONTS.iter().find_map(|path| read(Cow::Owned(fs::read(path).ok()?))).or_else(|| read(Cow::Borrowed(BUNDLED)))).as_ref()
 }
 
-fn read(bytes: Vec<u8>) -> Option<Font> {
+fn read(bytes: Cow<'static, [u8]>) -> Option<Font> {
     let u16_at = |at: usize| Some(u16::from_be_bytes(bytes.get(at..at + 2)?.try_into().ok()?));
     let u32_at = |at: usize| Some(u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
     // Where each of the font's tables is.
@@ -161,13 +169,22 @@ mod tests {
 
     #[test]
     fn an_emoji_has_a_picture() {
-        // Where the machine has neither the list nor the font, there is nothing to say.
-        if all().is_empty() {
-            return;
-        }
         let smile = all().iter().find(|emoji| emoji.name == "grinning face").unwrap();
         assert_eq!(smile.group, "Smileys & Emotion");
         let picture = picture(&smile.text).unwrap();
         assert!(picture.width > 64 && picture.pixels.iter().any(|pixel| pixel >> 24 == 255));
+    }
+
+    #[test]
+    fn clutch_has_a_font_of_its_own_for_every_emoji_it_lists() {
+        // As on a system with no emoji font: nearly all of Unicode's
+        // list is drawn by the one that comes with clutch.
+        let own = read(Cow::Borrowed(BUNDLED)).expect("the font clutch has");
+        let listed = listed();
+        let drawn = listed.iter().filter(|emoji| emoji.text.chars().next().is_some_and(|c| own.glyphs.contains_key(&(c as u32)))).count();
+        assert!(listed.len() > 1300 && drawn * 100 >= listed.len() * 99, "{drawn} of {}", listed.len());
+        let (start, end) = own.glyphs[&0x1F600];
+        let smile = apps::decode(std::io::Cursor::new(&own.bytes[start..end])).unwrap();
+        assert!(smile.width > 64);
     }
 }

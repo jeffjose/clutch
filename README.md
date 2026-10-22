@@ -131,8 +131,8 @@ searches drawings and emoji by name), its color (from Radix's or
 Tailwind's palette), its background
 (eighteen, from a plain tint to rays and stripes) and its shape
 (twenty-one). Looks are kept in `~/.config/clutch/looks.toml`. Choosing
-a picture needs `zenity`; emoji need the Noto Color Emoji font and
-Unicode's `emoji-test.txt`, which most distributions install.
+a picture needs `zenity`. Emoji come with clutch: Unicode's list of
+them, and the Noto Color Emoji font for a system that has none.
 
 ![Choosing a project's icon, color, background and shape](docs/look.png)
 
