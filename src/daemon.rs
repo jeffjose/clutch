@@ -656,7 +656,10 @@ fn launch(binding: &Binding, under_systemd: bool) {
         if under_systemd {
             // Started before anyone logged in, clutch knows nothing of
             // the display. systemd is told of it when the session starts.
-            command.envs(session_environment());
+            command.envs(session_environment().into_iter().map(|(name, value)| match name.as_str() {
+                "PATH" => (name, with_our_path(&value)),
+                _ => (name, value),
+            }));
             for ours in ["NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID", "INVOCATION_ID"] {
                 command.env_remove(ours);
             }
@@ -677,6 +680,18 @@ fn launch(binding: &Binding, under_systemd: bool) {
 /// The session's environment as systemd was last asked for it: it takes
 /// a couple of milliseconds to ask, which a key should not wait for.
 static SESSION: Mutex<Option<Vec<(String, String)>>> = Mutex::new(None);
+
+/// The session's PATH, then the places on clutch's own it leaves out. The
+/// session's is often short of mise's shims, where clutch's unit puts them.
+fn with_our_path(session: &str) -> String {
+    let mut dirs: Vec<std::path::PathBuf> = env::split_paths(session).collect();
+    for dir in env::var_os("PATH").map(|ours| env::split_paths(&ours).collect::<Vec<_>>()).unwrap_or_default() {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    env::join_paths(dirs).map(|path| path.to_string_lossy().into_owned()).unwrap_or_else(|_| session.to_string())
+}
 
 fn session_environment() -> Vec<(String, String)> {
     let known = SESSION.lock().ok().and_then(|known| known.clone());
