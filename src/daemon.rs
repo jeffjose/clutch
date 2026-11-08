@@ -80,6 +80,14 @@ fn fail(message: impl AsRef<str>) -> ! {
 }
 
 pub fn run(options: Options) -> ! {
+    // systemd's socket is clutch's alone. Left in the environment, all
+    // clutch starts would have it, and some speak on it: systemctl, from
+    // 255, says its EXIT_STATUS there, which systemd turns away, logging
+    // it. Taken now, before there are threads to read the environment.
+    let _ = NOTIFY_SOCKET.set(env::var_os("NOTIFY_SOCKET"));
+    for ours in ["NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID"] {
+        env::remove_var(ours);
+    }
     let socket = config::socket();
     if UnixStream::connect(&socket).is_ok() {
         fail("already running");
@@ -119,7 +127,7 @@ pub fn run(options: Options) -> ! {
         paused: false,
         gnome: false,
         given: Arc::default(),
-        under_systemd: env::var_os("NOTIFY_SOCKET").is_some(),
+        under_systemd: notify_socket().is_some(),
         started: Instant::now(),
         visor: Arc::default(),
     };
@@ -660,9 +668,7 @@ fn launch(binding: &Binding, under_systemd: bool) {
                 "PATH" => (name, with_our_path(&value)),
                 _ => (name, value),
             }));
-            for ours in ["NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID", "INVOCATION_ID"] {
-                command.env_remove(ours);
-            }
+            command.env_remove("INVOCATION_ID");
         }
         let started = command.spawn();
         // Asked again now, for the next key, rather than before this one.
@@ -716,9 +722,16 @@ fn ask_session_environment() -> Vec<(String, String)> {
     environment
 }
 
+static NOTIFY_SOCKET: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
+
+/// Where systemd listens, if it started clutch.
+fn notify_socket() -> Option<&'static std::ffi::OsString> {
+    NOTIFY_SOCKET.get().and_then(Option::as_ref)
+}
+
 /// Tell systemd we are up, and again each time round that we still are.
 fn notify(state: &str) {
-    let Some(path) = env::var_os("NOTIFY_SOCKET") else { return };
+    let Some(path) = notify_socket() else { return };
     let Ok(socket) = UnixDatagram::unbound() else { return };
     let _ = match path.as_bytes().strip_prefix(b"@") {
         Some(name) => SocketAddr::from_abstract_name(name)
